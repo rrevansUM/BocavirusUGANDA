@@ -1,0 +1,2020 @@
+---
+title: "HBoV-1 Uganda"
+date: "`r format(Sys.time(),'%B, %d, %Y')`"
+output: 
+  html_document: 
+    code_folding: hide
+    highlight: tango
+    theme: united
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE,
+                      warning = FALSE,
+                      fig.width = 12,
+                      fig.height = 8)
+```
+
+# Study and Data Description
+
+Prospective cohort of 32 women and children less than 7 years old enrolled between 2008-2009. The youngest child is referred to as the "primary child", all other household children known as "secondary children". In total, there were 32 infants belonging to 32 months and 49 other household children were followed for a median of 57 weeks (range, 3-119 weeks). 17 Mothers had HIV-1 and no infants *acquired* HIV-1, however 4 secondary children were positive for HIV-1. 12-month incidence of postnatal infection was calculated for HHV-6B, CMV, EBV, HSV-1 and HHV-8 (0%, surprisingly) but not HBoV-1 or Adenovirus
+
+Primary infection was defined as the first episode of oral viral shedding and/or viremia following birth.
+
+> Inclusion/Exclusion
+
+a. **Inclusion Criteria**:
+    1. Women must be at least 18 years old as per self-report
+    2. Participants must be willing to have home visits by a study staff member
+    3. Women must provide written or oral informed consent for themselves and their children (of whom they are the legal guardians) to participate in the study
+
+b.  **Exclusion Criteria**:
+    1. Inability or unwillingness to comply with all aspects of the study protocol
+    
+> Enrollment and Follow-up
+
+a. **Antenatal Visit** - pregnant women in third trimester enrolled
+b. **Baseline HHV-8 Testing of the Mother and Secondary Children** - saliva collected from woman and any children < 7 years old. Woman is then given swabs and instructed how to collect saliva from herself and her children daily for 2 weeks.
+c. **Follow-up Visit Schedule** - followed for up to 3 years. Follow-up visits will be each week, at the participants' home at a time pre-arranged to be convenient for them - or - the women will arrange to bring children to the UCI clinic if home visit is not acceptable.
+d. **Accrual Estimates** - A total of 30 primary children, their mothers and young siblings will be followed for at least 1 year. Study investigators hypothesize that it will take 6 months to enroll all 30 participants, and ~20% will be replaced during loss to follow-up
+
+NOTE: Families enrolled in screening phase for laboratory testing. These are marked by a stdy_wk=0 in data collection forms
+
+> Data Collection and Management
+
+1. In addition to the above:
+    a. Maternal blood samples for HHV-8 and PCR of plasma collected once each year
+    b. Blood obtained ASAP after birth of primary child for PCR testing
+    c. Blood from primary child for HHV-8 and PCR of plasma starting as early as 6 weeks of age and every 4 months
+    d. Blood samples for PCR from each secondary child < 7 once each year
+    e. Saliva for PCR from mother and all children obtained weekly for 3 years, and large volume of saliva every 4 months for Ab testing (*I don't see this one in the data or data dictionary* )
+    f. Questionnaire and physical exam of the primary child will be administered weekly to capture signs and symptoms of illness that occurred in the previous week
+
+
+```{r, library loading}
+library(VIM)            # missing data visualization
+library(DataCombine)    # combining data
+library(ggfortify)      # autoplot
+library(gridExtra)      # grid.arrange() and other plotting functions for ggplot2
+library(magrittr)       # extra piping not loaded by 'tidyverse'
+library(ggthemes)       # extra themes for ggplot2
+library(pander)         # pretty tables
+library(lubridate)      # manipulate date data
+library(xts)            # time-series tools
+library(dygraphs)       # more time-series tools
+library(survival)       # event-time analyses
+library(survminer)      # event-time/survival object plots
+library(rms)            # event-time/survival object plots
+library(ggplus)         # facet_multiple()
+library(RColorBrewer)   # color sets
+library(tableone)       # quick table objects
+library(tidyverse)      # data manipulation
+library(cowplot)        # plot grids
+panderOptions('digits', 3)
+panderOptions('round', 3)
+```
+
+# Data
+
+    a. Case Report Form (CRF) - medical data, collected weekly
+    b. Demographics (demo) - demographics and hiv/cd4 data
+    c. PCR results (pcr_boca_adeno)
+
+```{r, cache = TRUE}
+crf <- "S:/MartinEpi/Projects/BoV-Uganda/Source Data/Copy_of_CRF.csv"
+crf <- read.csv(file = crf, stringsAsFactors = FALSE)
+demo <- "S:/MartinEpi/Projects/BoV-Uganda/Source Data/Copy_of_Demo.csv"
+demo <- read.csv(file = demo, stringsAsFactors = FALSE)
+pcr_boca_adeno <- "S:/MartinEpi/Projects/BoV-Uganda/Source Data/Copy_of_PCR_Boca_Adeno.csv"
+pcr_boca_adeno <- read.csv(file = pcr_boca_adeno, stringsAsFactors = FALSE)
+```
+
+## Data Fixes
+
+Unfold code to see changes
+
+```{r}
+crf.clean <- crf %>%
+  mutate(FAMILY_ID = factor(FAMILY_ID),
+         id = factor(id),
+         idcode = factor(toupper(idcode)),
+         patientid = factor(patientid),
+         visitdt = as.Date(visitdt, "%d-%b-%y"),
+         ill.symptoms = as.integer(ifelse((fever==1|rash==1|swgland==1|
+                                             vomit2==1|diarrhea==1|
+                                             runnose==1|cough2==1|
+                                             soreth==1|mthsores==1), 
+                                          1, 0)),
+         saliva.share = as.integer(ifelse((saliva==1|chewfood==1|
+                                             kissmth==1|sharecup==1), 
+                                        1, 0))
+         ) %>%
+  rename(stdy_wk = week) %>%
+  select(-livercm) %>%
+  arrange(patientid, stdy_wk)
+
+demo.clean <- demo %>%
+  mutate(FAMILY_ID = factor(FAMILY_ID),
+         gender = factor(gender, 
+                         levels = c(1,2), 
+                         labels = c("Male","Female")),
+         id = factor(id),
+         patientid = factor(patientid),
+         idcode = factor(idcode),
+         dob = as.Date(dob, "%d-%b-%y"),
+         enrolldt = as.Date(enrolldt, "%d-%b-%y"),
+         age.enr = ifelse(idcode == "P", 
+                      difftime(enrolldt,dob,units = c("days")),
+                      difftime(enrolldt,dob,units = c("weeks"))/52),
+         age.enr.unit = ifelse(idcode == "P","Days", "Years"),
+         hiv = ifelse(((hiv == "neg")|
+                         (hiv == "neg- confirmed (in 046)")|
+                         (hiv == "neg-confirmed")), "neg", hiv),
+         hiv = ifelse(hiv == "neg-not confirmed"| hiv == "unknown", "", hiv),
+         cd4_end_dt = as.Date(cd4_end_dt, "%d-%b-%y")) %>%
+  arrange(patientid)
+
+# without pilot data
+pcr_boca.clean <- pcr_boca_adeno %>%
+  mutate(patientid = factor(PatientID), 
+         coldate = as.Date(coldate, "%d-%b-%y"),
+         hbov = ifelse(ORL_BOCA != 0.0, 1, 0)) %>%
+  select(coldate, patientid, stdy_wk, ORL_BOCA, PLS_BOCA,
+         hbov, hbov_duration, hbov_series, primary) %>%
+  filter(stdy_wk != 0)
+
+# only pilot data
+pilot.phase <- pcr_boca_adeno %>%
+  filter(stdy_wk == 0) %>%
+  mutate(patientid = factor(PatientID), 
+         coldate = as.Date(coldate, "%d-%b-%y"),
+         hbov.pos = ifelse(ORL_BOCA != 0.0, 1, 0),
+         FAMILY_ID = substr(as.character(patientid), 2, 5),
+         idcode = substr(as.character(patientid), 7, 7)) %>%
+  select(coldate, patientid, stdy_wk, ORL_BOCA,
+         PLS_BOCA, hbov.pos, FAMILY_ID, idcode,
+         hbov_duration, hbov_series, primary,
+         ORL_AF, PLS_AF, ORL_BEC, PLS_BEC)
+
+demo.clean <- pilot.phase %>%
+  filter(hbov.pos == 1 & idcode == "M") %>%
+  distinct(patientid, hbov.pos) %>%
+  rename(hbov.preg.mom = hbov.pos) %>%
+  full_join(demo.clean, by = "patientid") %>%
+  mutate(hbov.preg.mom = ifelse(is.na(hbov.preg.mom), 0, hbov.preg.mom))
+
+crf.boca.demo <- demo.clean %>%
+  select(-FAMILY_ID, -id, -idcode) %>%
+  full_join(crf.clean, by = "patientid") %>%
+  full_join(pcr_boca.clean, 
+            by = c("patientid" = "patientid", "stdy_wk" = "stdy_wk")) %>%
+  mutate(patientid = factor(patientid)) %>%
+  arrange(patientid, stdy_wk)
+```
+
+# Data Exploration
+
+## Investigate Pilot Phase Data
+
+There were `r dim(pilot.phase)[[1]]` total weeks of follow-up in the pilot phase. Despite 1,011 person-weeks of follow-up, there were little to no HBoV-1 positive samples, as illustrated in the following histogram and table
+
+```{r}
+title <- "Distribution of Oral Bocavirus Samples"
+xlab <- "Oral Bocavirus Samples log10 c/ml"
+subtit <- "Mothers and Secondary Children during the Pilot Phase"
+pilot.phase %>%
+  ggplot(aes(x = ORL_BOCA)) %>%
+  add(geom_histogram()) %>%
+  add(labs(title = title, x = xlab, subtitle = subtit)) %>%
+  add(theme_bw())
+
+pander(with(pilot.phase, {ftable(hbov.pos, FAMILY_ID, idcode)}))
+```
+
+There were 12 individuals who were HBoV-1 positive during this pilot phase, 5 were mothers. During this pilot phase there were no positive plasma HBoV-1 samples for any study participant.
+
+```{r, echo = FALSE, eval = FALSE}
+source("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/Functions/nest_ifelse.R") # nest_ifelse.R function
+
+p <- pilot.phase %>%
+  filter(!is.na(ORL_BOCA)) %>%
+  mutate(Member = factor(ifelse(idcode == "M", "Mother", "Secondary Child"))) %>%
+  select(patientid, FAMILY_ID, ORL_BOCA, coldate, Member) %>%
+  ggplot(aes(x = coldate, y = ORL_BOCA, color = Member)) %>%
+  add(geom_point(alpha = 0.7, size = 1)) %>%
+  add(scale_color_brewer(palette = "Set1")) %>%
+  add(theme_bw()) %>%
+  add(theme(legend.position = "bottom")) %>%
+  add(labs(x = "Study Week",
+           y = "Log10 HBoV-1 Viral Load/mL Saliva",
+           title = "HBoV-1 Viral Load by Household and Family Member",
+           subtitle = "Pilot Phase"))
+
+# pdf("~/Documents/Martin Lab/HBov-1/Uganda/Plots/family plots pilot phase stdy_wk.pdf")
+# ggplus::facet_multiple(plot = p, facets = "FAMILY_ID", ncol = 2, nrow = 4, scales = "free_x")
+# dev.off()
+```
+
+HBoV-1 Positive Mothers During Pilot Phase
+
+```{r}
+fams <- c('2459','2519','2533','2537','2540')
+pilot.phase %>%
+  filter((!is.na(ORL_BOCA)) & (FAMILY_ID %in% fams)) %>%
+  mutate(Member = factor(ifelse(idcode == "M", "Mother", "Secondary Child"))) %>%
+  select(patientid, FAMILY_ID, ORL_BOCA, coldate, Member) %>%
+  ggplot(aes(x = coldate, y = ORL_BOCA, color = Member)) %>%
+  add(geom_point(alpha = 0.7, size = 2)) %>%
+  add(facet_wrap( ~ FAMILY_ID, scales = "free_x", nrow = 5)) %>%
+  add(scale_color_brewer(palette = "Set1")) %>%
+  add(theme_bw()) %>%
+  add(theme(legend.position = "bottom")) %>%
+  add(labs(x = "Study Week",
+           y = "Log10 HBoV-1 Viral Load/mL Saliva",
+           title = "HBoV-1 Viral Load by Household and Family Member",
+           subtitle = "Pilot Phase"))
+```
+
+## Missing Data
+
+```{r}
+missFunc <- function(x){sum(is.na(x))/length(x)*100}
+apply(crf.clean[,c(57:93)], 2, missFunc)
+```
+
+So, 'secondary child present?' (spresent) is missing roughly 58% of the time. A lot of medication data is missing most of the time as well, the variables tmpsmx_v1 (sulfamethoxazole-trimethoprim in last week) (missing 98%), antiretro_v1 (any anti-retrovirals in the past week, 98%), othantib_v1 (other abx taken in past week, 98%), malarials_v1 (antimalarial meds in past week, 98%), and anti-fungals (98% missing), among many others. These will likely not be used in any analysis.
+
+```{r}
+pander(apply(demo.clean, 2, missFunc))
+```
+
+31% of the participants are missing birth dates, and 92% missing cd4 counts
+
+```{r}
+pander(apply(pcr_boca.clean, 2, missFunc))
+```
+
+as blood/plasma for participants was collected only every 4 months, it might make sense that 96% of the follow-up plasma BOCA (PLS_BOCA) would be missing.
+
+```{r}
+aggr_plot <- aggr(demo.clean, 
+                  col = c("navyblue","red"),
+                  numbers = T,
+                  sortVars = T,
+                  labels = names(demo.clean),
+                  cex.axis = 0.8,
+                  gap = 3,
+                  ylab = c("Histogram of Missing Demographics","Pattern"))
+
+aggr_plot2 <- aggr(pcr_boca.clean,
+                   col = c("navyblue","red"),
+                   numbers = T,
+                   sortVars = T,
+                   labels = names(pcr_boca.clean),
+                   cex.axis = 0.8,
+                   gap = 1,
+                   ylab = c("Histogram of Missing PCR results","Pattern"))
+```
+
+## investigate identifying variables
+
+```{r}
+f <- function(x){length(table(x))}
+pander(sapply(demo.clean[,c(1:4)], f))
+pander(table(demo.clean$idcode))
+```
+
+In CRF dataset, there are 6588 followup weeks for 32 families = 113 individuals. There are 5 different 'idcodes' corresponding to the mother, primary child and up to 3 secondary children < 7 years old. There are 49 secondary children, 31 households have one, 12 households have 2, and 6 households have 3.
+
+## Remove Unnecessary Variables
+
+```{r}
+ignore <- c("cd4_enroll", "cd4_end", "cd4_end_dt", "tmpsmx_v1", "antiretro_v1", 
+            "othantib_v1", "malarials_v1", "ibuprofen_v1", "fungals_v1", 
+            "rashraised", "spleencm", "PLS_BOCA", "v1")
+crf.boca.demo.red <- crf.boca.demo %>% select(-one_of(ignore))
+```
+
+## Tables and Frequencies
+
+Gantt S., _et.al._ (2016) previously reported on this cohort with respect to HHV exposure and shedding, we will confirm these demographic findings with respect to those positive for Bocavirus and those not positive.
+
+Martin E.T., _et.al._ (2015) defined an HBoV-1 shedding event as that with "at least 2 sequential HBoV-1 positive samples collected at least 6 days apart with no more than 1 consecutive interim HBoV-1-negative specimen." We will compile analyses for both this definition and any HBoV-1 positive sample.
+
+* Make variables: 
+    + any.hbov.pos (indicator for any positive HBoV-1 sample)
+    + consec (2 consecutive positive rule): {HBoV Neg, HBoV Pos}
+    + first.pos.dt (first date of first HBoV-1)
+    + first.consec.dt (first date of 2 consecutive HBoV-1 positive samples)
+    + age.first.hbov (age at first positive sample)
+    + age.first.hbov.units (age at first HBoV-1 positive sample)
+    + age.prim.infx (age at first consecutive samples)
+    + age.prim.units (age units for primary infection)
+    + secondary (indicator for secondary child)
+
+```{r}
+# any.hbov.pos, first.pos.dt, age.first.hbov, age.first.hbov.units
+any.hbov.pos <- crf.boca.demo.red %>%
+  filter(hbov == 1) %>%
+  group_by(patientid) %>%
+  filter(row_number() == 1) %>%
+  ungroup() %>%
+  select(patientid, hbov, coldate, dob) %>%
+  rename(any.hbov.pos = hbov,
+                first.pos.dt = coldate) %>%
+  mutate(
+    age.first.hbov = ifelse(grepl("P", patientid), 
+                                 difftime(first.pos.dt, dob, units="days")/7,
+                                 difftime(first.pos.dt, dob, units="days")/365),
+    age.first.hbov.units = ifelse(grepl("P", patientid),
+                                  "Weeks",
+                                  ifelse(grepl("S", patientid),
+                                         "Years", NA))
+    ) %>%
+  select(-dob)
+
+# consec, first.consec.dt, age.prim.infx, age.prim.units
+consec <- crf.boca.demo.red %>%
+  filter(hbov_duration >= 2) %>%
+  group_by(patientid) %>%
+  mutate(first = row_number() == 1,
+         consec = 1,
+         first.consec.dt = coldate) %>%
+  ungroup() %>%
+  filter(first == 1) %>%
+  select(patientid, consec, first.consec.dt, dob) %>%
+  mutate(
+    age.prim.infx = ifelse(grepl("P", patientid),
+                                difftime(first.consec.dt, dob, units="days")/7,
+                                difftime(first.consec.dt, dob, units="days")/365),
+    age.prim.units = ifelse(grepl("P", patientid),
+                            "Weeks",
+                            ifelse(grepl("S", patientid),
+                            "Years", NA))
+    ) %>%
+  select(-dob)
+
+# merge to add new variables
+crf.boca.demo.red2 <- crf.boca.demo.red %>%
+  full_join(any.hbov.pos, by = "patientid") %>%
+  full_join(consec, by = "patientid") %>%
+  mutate(secondary = ifelse(grepl("S", patientid), 1, 0),
+         consec = factor(ifelse(is.na(consec), "HBoV Neg", "HBoV Pos")),
+         any.hbov.pos = factor(ifelse(is.na(any.hbov.pos), "HBoV Neg", "HBoV Pos")))
+
+# new demographics data with indicator for all secondary children
+demo.from.cbdr2 <- crf.boca.demo.red2 %>%
+  distinct(patientid, hbov.preg.mom, dob, gender, hiv, enrolldt, age.enr,
+           age.enr.unit, FAMILY_ID, id, idcode, any.hbov.pos, first.pos.dt,
+           age.first.hbov, age.first.hbov.units, consec, first.consec.dt,
+           age.prim.infx, age.prim.units)
+
+# add primay duration and maximum duration per person
+prim.infx.dur <- crf.boca.demo.red2 %>%
+  select(patientid, primary, hbov_duration) %>%
+  filter(primary == 1 & hbov_duration >= 2) %>%
+  unique() %>%
+  rename(prim_infx_dur = hbov_duration) %>%
+  select(-primary)
+
+max.infx.dur <- crf.boca.demo.red2 %>%
+  distinct(patientid, hbov_duration) %>%
+  group_by(patientid) %>%
+  filter(hbov_duration == max(hbov_duration, na.rm = TRUE)) %>%
+  rename(max_duration = hbov_duration)
+
+# merge to add variables, add secondary child indicator
+demo.from.cbdr3 <- demo.from.cbdr2 %>%
+  full_join(prim.infx.dur, by = "patientid") %>%
+  full_join(max.infx.dur, by = "patientid") %>%
+  mutate(secondary = ifelse(grepl("S", patientid), 1, 0))
+```
+
+HBoV-1 positive as defined by the rule above
+```{r}
+pander(table(demo.from.cbdr3$consec))
+```
+
+any HBoV-1 positive sample
+```{r}
+pander(table(demo.from.cbdr3$any.hbov.pos))
+```
+
+So there are `r as.numeric(table(demo.from.cbdr3$consec)[2])` individuals positive for bocavirus fitting the definition above. `r as.numeric(table(demo.from.cbdr3$consec)[1])` do not meet the qualifications and are not considered HBoV-1 positive. However, if we examine the number of those with **any** HBoV-1 positive samples, we see `r round(prop.table(table(demo.from.cbdr3$any.hbov.pos))[[2]],4)*100`% had at least 1 HBoV-1 positive sample.
+
+## Demographics and Characteristics by HBoV-1 infection status
+
+### Household level
+
+```{r}
+pander(with(demo.from.cbdr3, {table(FAMILY_ID, consec)}))
+```
+
+There are only 2 families without HBoV-1 positive infections as defined above: 2171 and 2459. However, it does appear that not all family members will be infected at the same time, with only 8 families (`r (8/32)*100`%) all being infected at the same time.
+
+### Individual level
+
+```{r}
+pander(with(demo.from.cbdr3, {table(idcode, consec)}))
+pander(with(demo.from.cbdr3, {prop.table(table(idcode, consec), margin=1)}))
+```
+
+Over half of the Mother's are HBoV-1 positive (n=`r table(demo.from.cbdr3$idcode, demo.from.cbdr3$consec)[1,2]`, `r (prop.table(table(demo.from.cbdr3$idcode, demo.from.cbdr3$consec), margin=1)[1,2])*100`) whereas `r (prop.table(table(demo.from.cbdr3$idcode, demo.from.cbdr3$consec), margin=1)[2,2])*100` of the primary children are infected (n=`r table(demo.from.cbdr3$idcode, demo.from.cbdr3$consec)[2,2]`). The secondary children are infected `r (prop.table(table(demo.from.cbdr3$secondary, demo.from.cbdr3$consec), margin=1)[2,2])*100`% of the time.
+
+Gender
+```{r}
+pander(with(demo.from.cbdr3, {table(secondary, consec, gender)}))
+```
+
+Distribution of ages
+
+I want to first describe the difference between using date of birth (dob) and enrollment date (enrolldt) for primary children:
+
+```{r}
+p1 <- demo.from.cbdr3 %>%
+  filter(idcode == "P") %>%
+  ggplot(aes(x = age.enr)) %>%
+  magrittr::add(geom_histogram()) %>% # lexical scope magrittr::add() once to show where it comes from
+  add(geom_vline(aes(xintercept = mean(age.enr, na.rm = TRUE)),
+                 color = "red",linetype = "dashed", size = 1)) %>%
+  add(labs(title = "Distribution of Age at Enrollment",
+           subtitle = "Primary Children",
+           x = "Age, days")) %>%
+  add(theme_minimal(base_size = 14))
+
+temp <- demo.from.cbdr3 %>% filter(secondary == 1)
+vlines <- plyr::ddply(temp, "idcode", 
+                      dplyr::summarize, 
+                      mean.age.enr = mean(age.enr, na.rm = TRUE))
+
+q1 <- ggplot(merge(temp, vlines), aes(x = age.enr)) %>%
+  add(geom_histogram()) %>%
+  add(geom_vline(aes(xintercept = mean.age.enr), 
+                      linetype = "dashed", color = "red", size = 1)) %>%
+  add(facet_wrap(~idcode)) %>%
+  add(labs(title = "Distribution of Age at Enrollment",
+                subtitle = "Secondary Children", 
+                x = "Age, years")) %>%
+  add(theme_minimal(base_size = 14))
+
+grid.arrange(p1, q1)
+``` 
+
+The mean age (red-dashed line) is roughly `r round(mean(subset(demo.clean, idcode=="P")$age.enr), 2)` days, so very shortly after birth were the children enrolled. The mean ages of secondary children were 4.2, 2.8 and 3.1 for those families with this secondary children.
+
+```{r}
+p1 <- demo.from.cbdr3 %>%
+  filter(idcode == "P") %>%
+  ggplot(aes(x = age.prim.infx)) %>%
+  add(geom_histogram()) %>%
+  add(geom_vline(aes(xintercept = mean(age.prim.infx, na.rm = TRUE)),
+                 color = "red",linetype = "dashed", size = 1)) %>%
+  add(labs(title = "Distribution of Age at Primary Infection",
+           subtitle = "Primary Children",
+           x = "Age, Weeks")) %>%
+  add(theme_minimal(base_size = 14))
+
+p2 <- demo.from.cbdr3 %>%
+  filter(idcode == "P") %>%
+  ggplot(aes(x = age.first.hbov)) %>%
+  add(geom_histogram()) %>%
+  add(geom_vline(aes(xintercept = mean(age.first.hbov, na.rm = TRUE)),
+                 color = "red", linetype = "dashed", size = 1)) %>%
+  add(labs(title = "Distribution of Age at First HBoV-1 Infection", 
+           subtitle = "Primary Children",
+           x = "Age, Weeks")) %>%
+  add(theme_minimal(base_size = 14))
+
+grid.arrange(p1, p2)
+```
+
+The mean age at time of primary infection (definition above) is `r round(mean(subset(demo.from.cbdr3, idcode=="P")$age.prim.infx, na.rm=TRUE), 2)` weeks while the mean age at first positive HBoV-1 sample was `r round(mean(subset(demo.from.cbdr3, idcode=="P")$age.first.hbov, na.rm=TRUE),2)` about 8 weeks earlier, strangely enough.
+
+HIV Status
+```{r}
+demo.from.cbdr3 %>%
+  group_by(consec, idcode) %>%
+  dplyr::select(hiv) %>%
+  ftable()
+```
+
+Study Follow-up Time
+```{r}
+par(mfrow = c(2,2))
+hist(crf.boca.demo.red2$stdy_wk,
+     ylim = c(0, 1200), xlim = c(0, 120),
+     col = "grey",
+     xlab = "Follow-up Weeks", 
+     main = "Oropharyngeal Samples Collected Weekly \n Overall")
+hist(subset(crf.boca.demo.red2, idcode == "P")$stdy_wk,
+     ylim = c(0, 1200), xlim = c(0, 120),
+     col = "grey",
+     xlab = "Follow-up Weeks", 
+     main = "Oropharyngeal Samples Collected Weekly \n Primary Children")
+hist(subset(crf.boca.demo.red2, idcode == "M")$stdy_wk,
+     ylim = c(0, 1200), xlim = c(0, 120),
+     col = "grey",
+     xlab = "Follow-up Weeks", 
+     main = "Oropharyngeal Samples Collected Weekly \n Mothers")
+hist(subset(crf.boca.demo.red2, secondary == 1)$stdy_wk,
+     ylim = c(0, 1200), xlim = c(0, 120),
+     col = "grey",
+     xlab = "Follow-up Weeks", 
+     main = "Oropharyngeal Samples Collected Weekly \n Secondary Children")
+par(mfrow = c(1, 1))
+```
+
+Follow-up samples for mothers, primary children, and secondary children have similar distributions. Note the drop off in collected samples beyond week 60.
+
+Available oropharyngeal samples by family member type
+```{r}
+crf.boca.demo.red2 %>%
+  filter(!is.na(ORL_BOCA)) %>%
+  group_by(idcode, consec) %>%
+  dplyr::select(ORL_BOCA) %>%
+  summarise(length(ORL_BOCA)) %>%
+  pander()
+```
+
+Fever reporting
+```{r}
+pander(with(crf.boca.demo.red2, {table(idcode == "P", consec, fever)}))
+pander(with(crf.boca.demo.red2, {table(secondary, consec, fever)}))
+pander(with(crf.boca.demo.red2, {table(idcode == "M", consec, fever)}))
+```
+
+## Exploring HBoV-1 positive - specific pregnant mothers
+
+```{r}
+# identify families with infected mothers
+demo.infect.mothers <- demo.from.cbdr3 %>%
+  filter(idcode == "M") %>%
+  mutate(mom.status = factor(hbov.preg.mom, 
+                             levels = c(0, 1), 
+                             labels = c("HBoV-1 (-)","HBoV-1 (+)"))) %>%
+  select(mom.status, FAMILY_ID) %>%
+  arrange(FAMILY_ID) %>%
+  full_join(demo.from.cbdr3, by = "FAMILY_ID")
+
+# see 'Functions' in table of contents (end of document)
+source("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/Functions/nest_ifelse.R")
+
+temp.1 <- demo.infect.mothers %>%
+  distinct(FAMILY_ID, mom.status) %>%
+  full_join(crf.boca.demo.red2, by = "FAMILY_ID") %>%
+  mutate(member = factor(ie(
+    i(idcode == "M", "Mother"),
+    i(idcode == "P", "Primary Child"),
+    e('Secondary Child')
+  )))
+
+crf.boca.demo.red3 <- temp.1 %>%
+  group_by(member) %>%
+  count(stdy_wk) %>%
+  rename(n.enroll = n) %>%
+  ungroup() %>%
+  full_join(temp.1, by = c("member","stdy_wk")) %>%
+  arrange(FAMILY_ID, patientid, stdy_wk)
+
+tbl_df(crf.boca.demo.red3[,c(1:6)])
+```
+
+```{r, echo=FALSE, eval=FALSE}
+# file <- "~/Documents/Martin Lab/HBov-1/Uganda/crf.boca.demo.red3.csv"
+# write.csv(crf.boca.demo.red3, file=file)
+```
+
+### Primary Children
+
+How many primary children where Mother was HBoV-1 negative?
+```{r}
+demo.infect.mothers %>%
+  group_by(mom.status, idcode) %>%
+  dplyr::count() %>%
+  pander()
+```
+
+How many Primary children with a primary infection where the Mother was HBoV-1 Positive (or negative)
+```{r}
+demo.infect.mothers %>%
+  filter(idcode == "P") %>%
+  group_by(mom.status) %>%
+  count(consec) %>%
+  pander()
+```
+
+Gender of primary children by HBoV-1 positive/negative Mothers
+```{r}
+pander(with(demo.infect.mothers, {table(gender, idcode, mom.status)}))
+```
+
+Mean age at enrollment of primary children for HBoV-1 negative mothers and Mean age at time of primary infection for HBoV-1 negative/positive mothers
+```{r}
+demo.infect.mothers %>%
+  group_by(mom.status) %>%
+  filter(idcode == "P") %>%
+  summarise("Age at Enrollment" = median(age.enr, na.rm = TRUE), 
+            "Age at Infx" = median(age.prim.infx, na.rm = TRUE),
+            "Min(Age) at Enroll" = min(age.enr, na.rm = TRUE),
+            "Max(Age) at Enroll" = max(age.enr, na.rm = TRUE),
+            "Min(Age) at Infx" = min(age.prim.infx, na.rm = TRUE),
+            "Max(Age) at Infx" = max(age.prim.infx, na.rm = TRUE)) %>%
+  pander()
+```
+
+Available oropharyngeal samples for primary children with HBoV-1 positive/negative mothers
+```{r}
+crf.boca.demo.red3 %>%
+  filter(!is.na(ORL_BOCA) & idcode == "P") %>%
+  select(ORL_BOCA) %>%
+  summarise(oro.samples = length(ORL_BOCA)) %>%
+  pander()
+
+crf.boca.demo.red3 %>%
+  filter(!is.na(ORL_BOCA) & idcode == "P") %>%
+  group_by(mom.status) %>%
+  select(ORL_BOCA) %>%
+  summarise(oro.samples = length(ORL_BOCA)) %>%
+  pander()
+```
+
+#### Illness symptom reporting
+
+Fever reporting
+```{r}
+pander(with(crf.boca.demo.red3, {table(idcode == "P", mom.status, fever)}))
+pander(with(crf.boca.demo.red3, {table(secondary, mom.status, fever)}))
+```
+
+### Secondary Children
+
+How many secondary children where Mother was HBoV-1 negative or positive?
+```{r}
+demo.infect.mothers %>%
+  filter(secondary == 1) %>%
+  group_by(mom.status) %>%
+  count() %>%
+  pander()
+```
+
+Gender of secondary children by HBoV-1 positive/negative Mothers
+```{r}
+pander(with(demo.infect.mothers, {table(gender, secondary, mom.status)}))
+```
+
+Mean age at enrollment and at time of infection for secondary children, by HBoV-1 pregnant mother status
+```{r}
+demo.infect.mothers %>%
+  group_by(mom.status) %>%
+  filter(secondary == 1) %>%
+  summarise("Age at Enrollment" = median(age.enr, na.rm = TRUE), 
+            "Age at Infx" = median(age.prim.infx, na.rm = TRUE),
+            "Min(Age) at Enroll" = min(age.enr, na.rm = TRUE),
+            "Max(Age) at Enroll" = max(age.enr, na.rm = TRUE),
+            "Min(Age) at Infx" = min(age.prim.infx, na.rm = TRUE),
+            "Max(Age) at Infx" = max(age.prim.infx, na.rm = TRUE)) %>%
+  pander()
+```
+
+How many secondary children per family, by HBoV-1 positive/negative pregnant moms
+```{r}
+demo.infect.mothers %>%
+  filter(secondary == 1) %>%
+  group_by(FAMILY_ID, mom.status) %>%
+  select(secondary) %>%
+  count() %>%
+  ungroup() %>%
+  group_by(mom.status) %>%
+  count(n) %>%
+  pander()
+```
+
+Available oropharyngeal samples for secondary children with HBoV-1 positive/negative mothers
+```{r}
+crf.boca.demo.red3 %>%
+  filter(!is.na(ORL_BOCA) & secondary == 1) %>%
+  select(ORL_BOCA) %>%
+  summarise(oro.samples = length(ORL_BOCA)) %>%
+  pander()
+
+crf.boca.demo.red3 %>%
+  filter(!is.na(ORL_BOCA) & secondary == 1) %>%
+  group_by(mom.status) %>%
+  select(ORL_BOCA) %>%
+  summarise(length(ORL_BOCA)) %>%
+  pander()
+```
+
+HIV status by Mothers with HBoV-1 (+) samples during Pregnancy
+
+```{r}
+demo.infect.mothers %>%
+  group_by(mom.status, idcode) %>%
+  select(hiv) %>%
+  filter(hiv == "") %>%
+  count() %>%
+  pander()
+```
+
+### Behavioral Family Transmission
+
+* Behavioral items to address:
+    + Breastfeeding During Study
+        + Weaned during study
+        + Breastfed for entire study
+        + Breasfeeding Duration, Wks
+    + Visits with saliva-sharing behavior
+        + Percentage of visits with each behavior, calculated per household
+        
+* Transmission Variables available:
+    + breastfed - Mother breastfed child in past week
+    + saliva - Mother rubbed saliva into an insect bite or wound on child in past week
+    + chewfood - Mother chewed up food before giving to child in the past week
+    + kissmth - Mother and child kissed on mouth in past week
+    + sharecup - mother chared a cup or eating utensil with child in past week
+    
+```{r}
+crf.boca.demo.red4 <- crf.boca.demo.red3 %>%
+  select(patientid) %>%
+  group_by(patientid) %>%
+  mutate(last = as.integer(row_number() == n()),
+         duration = row_number()) %>%
+  ungroup() %>%
+  filter(last == 1) %>%
+  select(patientid, duration) %>%
+  full_join(crf.boca.demo.red3, by = "patientid") %>%
+  plyr::ddply("patientid", transform, 
+              breast.feed.dur = sum(breastfed, na.rm=TRUE)) %>%
+  mutate(breast.feed.dur = ifelse(member == "Primary Child", breast.feed.dur, NA),
+         temp = ifelse((member == "Primary Child" & breast.feed.dur != 0),
+                     ifelse(breast.feed.dur == duration, 0, 1),
+                     NA),
+         bf.weaned = ifelse(patientid == "02380-P", 0, temp),
+         breast.fed = ifelse(is.na(bf.weaned), 0, 1)) %>%
+  select(-temp)
+```
+
+```{r}
+bf.temp <- crf.boca.demo.red4 %>%
+  filter(idcode == "P") %>%
+  distinct(patientid, duration, breast.feed.dur, 
+           bf.weaned, breast.fed, mom.status, consec)
+```
+
+Whether or not a child was breast feed at all
+```{r}
+pander(with(bf.temp, {table(breast.fed, consec)}))
+pander(with(bf.temp, {table(breast.fed, mom.status)}))
+```
+
+Was the primary child 'weaned' during the course of the study? i.e. how many children were not either breast fed for the entire duration of the their follow up time or not at all?
+```{r}
+pander(with(bf.temp, {table(bf.weaned, consec)}))
+pander(with(bf.temp, {table(bf.weaned, mom.status)}))
+```
+
+For those that were weaned, what was the median duration of breast feeding
+```{r}
+bf.temp %>%
+  filter(breast.fed == 1) %>%
+  group_by(mom.status) %>%
+  summarise(bf.median = median(breast.feed.dur, na.rm=TRUE),
+            bf.min = min(breast.feed.dur, na.rm=TRUE),
+            bf.max = max(breast.feed.dur, na.rm=TRUE)) %>%
+  pander()
+```
+
+Saliva Sharing Behavior
+```{r}
+crf.boca.demo.red4 %>%
+  plyr::ddply("FAMILY_ID",
+              transform, 
+              sum.saliva = sum(saliva.share, na.rm=TRUE)) %>%
+  select(FAMILY_ID, sum.saliva, mom.status) %>%
+  group_by(FAMILY_ID) %>%
+  mutate(perc.saliva = (sum.saliva/n())*100) %>%
+  ungroup() %>%
+  distinct(FAMILY_ID, perc.saliva, mom.status) %>%
+  group_by(mom.status) %>%
+  summarise(median.ps = median(perc.saliva, na.rm=TRUE),
+            min.ps = min(perc.saliva, na.rm=TRUE),
+            max.ps = max(perc.saliva, na.rm=TRUE)) %>%
+  pander()
+```
+
+# Time to Event (Hazard) Modelling
+
+Duration of time in study
+```{r}
+crf.boca.demo.red4 %>%
+  distinct(member, duration) %>%
+  ggplot() %>%
+  add(geom_histogram(aes(x = duration), binwidth = 10)) %>%
+  add(facet_wrap(~member, scales = "free_x")) %>%
+  add(theme_minimal()) %>%
+  add(labs(title = "Study Time Duration by Family Member",
+           x = "Follow-Up Time",
+           y = "Frequency"))
+```
+
+## Time to First Positive HBoV-1 Sample (event time analyses)
+
+Mothers
+
+Hazard of acquisition during pregnancy (pilot phase)
+```{r}
+# wrapper for difftimes
+time_diff <- function(time1, time2, units) {
+  # takes time1-time2
+  difference <- difftime(time1, time2, units = units)
+  out <- as.numeric(difference, units = units)
+  return(out)
+}
+
+temp <- pilot.phase %>%
+  filter(idcode == "M") %>%
+  arrange(patientid, coldate) %>%
+  group_by(patientid) %>%
+  mutate(first = row_number() == 1) %>%
+  ungroup() %>%
+  filter(first == TRUE) %>%
+  select(patientid, coldate) %>%
+  rename(tri.dt = coldate) %>%
+  full_join(filter(pilot.phase, idcode == "M"), by = "patientid") %>%
+  filter(hbov.pos == 1) %>%
+  mutate(hbov.preg.acq = time_diff(coldate, tri.dt, "days")) %>%
+  group_by(patientid) %>%
+  mutate(first = row_number() == 1) %>%
+  ungroup() %>%
+  filter(first == TRUE) %>%
+  summarise(median.orl.boca = median(ORL_BOCA),
+            min.orl.boca = min(ORL_BOCA),
+            max.orl.boca = max(ORL_BOCA),
+            median.hbov.preg.acq = median(hbov.preg.acq),
+            min.hbov.preg.acq = min(hbov.preg.acq),
+            max.hbov.preg.acq = max(hbov.preg.acq))
+pander(temp)
+```
+
+The median time to acquisition of HBoV-1 in these 5 pregnant mothers since their first trimester was `r as.numeric(temp[4])` (range: `r as.numeric(temp[5])`-`r as.numeric(temp[6])`). The median Log10 HBoV-1/mL of Saliva was `r as.numeric(temp[1])` (range: `r as.numeric(temp[2])`-`r as.numeric(temp[3])`).
+
+Primary Children
+```{r}
+event.time.pkids <- crf.boca.demo.red4 %>%
+  arrange(patientid, visitdt) %>%
+  mutate(hbov.event = ifelse((consec == "HBoV Pos"), 1, 0)) %>%
+  group_by(patientid) %>%
+  mutate(first = as.numeric(row_number() == 1),
+         last = as.numeric(row_number() == n())) %>%
+  ungroup(patientid) %>%
+  mutate(time = ifelse(consec == "HBoV Pos",
+                       time_diff(first.consec.dt, enrolldt, "weeks"),
+                       time_diff(visitdt, enrolldt, "weeks"))) %>%
+  filter(idcode == "P" & last == 1) %>%
+  select(patientid, FAMILY_ID, idcode, mom.status, gender,
+         age.enr, consec, any.hbov.pos, hbov.event, time,
+         duration, secondary, breast.feed.dur, bf.weaned, 
+         breast.fed, first.pos.dt, age.first.hbov, age.first.hbov.units,
+         first.consec.dt, age.prim.infx, age.prim.units)
+
+dim(event.time.pkids)
+tbl_df(event.time.pkids[,c(1,9:10)])
+```
+
+Create Survival Object and Calculate Kaplan-Meier Estimate and Cumulatve Incidence
+
+```{r}
+summary(event.time.pkids[,c(9,10)])
+surv.obj <- with(event.time.pkids, {Surv(time, hbov.event)})
+surv.fit <- survfit(surv.obj ~ 1, 
+                    data = event.time.pkids, 
+                    type = "kaplan-meier")
+pander(surv.fit)
+summ.surv.fit <- summary(surv.fit)
+survlist <- summ.surv.fit[c(2:6,8:10)]
+surv.df <- data.frame(matrix(unlist(survlist), 
+                             nrow = length(survlist$time), 
+                             byrow = FALSE))
+colnames(surv.df) <- names(survlist)
+f <- function(x){round(x, 2)}
+surv.df[, c(1, 5:8)] <- apply(surv.df[, c(1, 5:8)], 2, f)
+pander(surv.df)
+
+# write.csv(surv.df, file = "~/Documents/Martin Lab/HBov-1/Uganda/prim_kids_lifetable.csv")
+
+objNPsurv <- npsurv(Surv(time, hbov.event == 1) ~ 1,
+                    data = event.time.pkids)
+
+survplot(objNPsurv, type = "kaplan-meier", fun = function(x){1-x},
+         xlab = "Age, weeks",
+         ylab = "Cumulative Incidence",
+         n.risk = TRUE,
+         cex.n.risk = 0.9,
+         adj.n.risk = 0.0,
+         col.fill = "gray")
+
+ggsurvplot(surv.fit, risk.table = TRUE, censor = TRUE, fun = "event",
+           main = "HBoV-1 Cumulative Incidence in (n = 32) Ugandan Newborns",
+           xlab = "Age, days",
+           ylab = "Cumulative Incidence",
+           ggtheme = theme_bw())
+```
+
+The median of `r as.numeric(summary(surv.fit)$table["median"])` implies 50% of the primary children were infected with HBoV-1 within `r round(as.numeric(summary(surv.fit)$table["median"]), 0)` weeks of enrollment (95% CI: `r round(as.numeric(summary(surv.fit)$table["0.95LCL"]), 2)`, `r round(as.numeric(summary(surv.fit)$table["0.95UCL"]), 2)`). This is close to that described by the sample median from summary (`r median(event.time.pkids$time)`) since there was only one censored child.
+
+Hazard Modeling of Primary Children
+```{r}
+pkids.surv.fit <- survfit(surv.obj ~ 1)
+
+par(mfrow = c(2,1))
+plot(pkids.surv.fit,
+     main = "Time to Primary HBoV-1 Infection \n Primary Children", 
+     ylab = "Kaplan-Meier")
+legend("topright", 
+       legend = c("K-M estimate", "95% Confidence Band"), 
+       lty = 1:2)
+plot(pkids.surv.fit, 
+     fun = "cumhaz",
+     main = "Cumulative Hazard of Primary HBoV-1 Infecton",
+     xlab = "Age, weeks",
+     ylab = "Cumulative Hazard")
+legend("topleft", 
+       legend = c("Cumulative Hazard", "95% Confdence Band"), 
+       lty = 1:2)
+par(mfrow = c(1,1))
+
+summ.surv <- summary(survreg(Surv(time, hbov.event) ~ 1, 
+                             data = event.time.pkids,
+                             dist="weibull"))
+
+scale <- exp(as.numeric(summ.surv$coefficients))
+shape <- 1/as.numeric(summ.surv$scale)
+
+par(mfrow = c(3, 1))
+curve((shape/scale)*(x/scale)^(shape - 1), 
+      from = 0, to = 60,
+      ylab = "Hazard Function",
+      main = "Weibull Accelerated Failure Time Model describing Time to Primary Infection \n Primary Children",
+      lty = 1, 
+      lwd = 5)
+curve((x/scale)^(shape),
+      from = 0, to = 60, 
+      ylab = "Cumulative Hazard",
+      lty = 2,
+      lwd = 5)
+curve(1-((x/scale)^(shape)),
+      from = 0, to = 60,
+      ylab = "Survival Function",
+      lty = 3,
+      lwd = 5)
+par(mfrow = c(1,1))
+```
+
+Univariate Hazard Modelling/Cox Regression
+
+```{r}
+# create saliva sharing behavior variable within 28 days of primary infection
+event.time.pkids <- crf.boca.demo.red4 %>%
+  filter(saliva.share == 1 & idcode == "P") %>%
+  select(patientid, saliva.share, coldate, first.consec.dt) %>%
+  mutate(saliva.diff = time_diff(first.consec.dt, coldate, "days"),
+         saliva.share.28 = ifelse((saliva.diff >= 0 & saliva.diff <= 28), 
+                                  1, 0),
+         saliva.share.28 = ifelse((saliva.share == 1 & is.na(first.consec.dt)), 
+                                  1, saliva.share.28)) %>%
+  filter(saliva.share.28 == 1) %>%
+  distinct(patientid, saliva.share.28) %>%
+  right_join(event.time.pkids, by = "patientid") %>%
+  mutate(saliva.share.28 = factor(ifelse(is.na(saliva.share.28), 0, saliva.share.28),
+                                  levels = c(0, 1),
+                                  labels = c("No", "Yes")))
+
+# create breast feeding within 28 days of primary infection
+event.time.pkids <- crf.boca.demo.red4 %>%
+  filter(breastfed == 1 & idcode == "P") %>%
+  select(patientid, breastfed, coldate, first.consec.dt) %>%
+  mutate(breast.diff = time_diff(first.consec.dt, coldate, "days"),
+         breast.fed.28 = ifelse((breast.diff >= 0 & breast.diff <= 28), 1, 0),
+         breast.fed.28 = ifelse((breastfed == 1 & is.na(first.consec.dt)),
+                                1, breast.fed.28)) %>%
+  filter(breast.fed.28 == 1) %>%
+  distinct(patientid, breast.fed.28) %>%
+  right_join(event.time.pkids, by = "patientid") %>%
+  mutate(breast.fed.28 = factor(ifelse(is.na(breast.fed.28), 0, breast.fed.28),
+                                levels = c(0, 1),
+                                labels = c("No","Yes")))
+
+# add mother HIV status
+event.time.pkids <- demo.from.cbdr3 %>%
+  filter(idcode == "M") %>%
+  select(FAMILY_ID, hiv) %>%
+  rename(hiv.mom = hiv) %>%
+  right_join(event.time.pkids, by = "FAMILY_ID")
+
+# add mothers with HBoV-1 (+) samples within 14 days of primary infection
+event.time.pkids <- crf.boca.demo.red4 %>%
+  filter(idcode == "M" & hbov_duration >= 2) %>%
+  select(coldate, hbov_duration, FAMILY_ID) %>%
+  mutate(hbov.mom = 1) %>%
+  full_join(filter(crf.boca.demo.red4, idcode == "P" ), 
+            by = c("coldate", "FAMILY_ID")) %>%
+  select(patientid, coldate, hbov, hbov.mom, primary, FAMILY_ID) %>%
+  arrange(FAMILY_ID, patientid, coldate) %>%
+  filter(hbov == 1 | hbov.mom == 1) %>%
+  group_by(patientid) %>%
+  mutate(hbov.mom.14 = lag(hbov.mom, n = 2)) %>%
+  ungroup() %>%
+  filter(hbov == 1 & primary == 1 & hbov.mom.14 == 1) %>%
+  distinct(patientid, hbov.mom.14) %>%
+  right_join(event.time.pkids, by = "patientid") %>%
+  mutate(hbov.mom.14 = factor(ifelse(is.na(hbov.mom.14), 0, hbov.mom.14), 
+                              levels = c(0, 1),
+                              labels = c("HBoV-1 (-)","HBoV-1 (+)")))
+
+# add siblings being positive within 14 days of primary infection
+event.time.pkids <- crf.boca.demo.red4 %>%
+  filter(secondary == 1 & hbov_duration >= 2) %>%
+  select(coldate, hbov_duration, FAMILY_ID) %>%
+  mutate(hbov.sibs = 1) %>%
+  full_join(filter(crf.boca.demo.red4, idcode == "P"),
+            by = c("coldate", "FAMILY_ID")) %>%
+  select(patientid, coldate, hbov, hbov.sibs, primary, FAMILY_ID) %>%
+  arrange(FAMILY_ID, patientid, coldate) %>%
+  filter(hbov == 1 | hbov.sibs == 1) %>%
+  group_by(patientid) %>%
+  mutate(hbov.sibs.14 = lag(hbov.sibs, n = 2)) %>%
+  ungroup() %>%
+  filter(hbov == 1 & primary == 1 & hbov.sibs.14 == 1) %>%
+  distinct(patientid, hbov.sibs.14) %>%
+  right_join(event.time.pkids, by = "patientid") %>%
+  mutate(hbov.sibs.14 = factor(ifelse(is.na(hbov.sibs.14), 0, hbov.sibs.14),
+                               levels = c(0, 1),
+                               labels = c("HBoV-1 (-)","HBoV-1 (+)")))
+
+# combine siblings and mother infectivity and re-run the model
+event.time.pkids <- event.time.pkids %>%
+  mutate(hh.hbov.14 = ifelse(hbov.sibs.14 == "HBoV-1 (+)" | hbov.mom.14 == "HBoV-1 (+)",
+                             "HBoV-1 (+)",
+                             "HBoV-1 (-)"))
+```
+
+Unadjusted Hazard Ratios
+```{r}
+varsList <- c("gender", "hiv.mom", "hbov.mom.14",
+              "mom.status", "breast.fed.28",
+              "breast.feed.dur", "saliva.share.28")
+temp <- event.time.pkids[,c(varsList)]
+temp$gender <- relevel(temp$gender, ref = "Female")
+survObj <- Surv(event.time.pkids$time, event.time.pkids$hbov.event)
+f <- function(x) {
+  modCox <- coxph(survObj ~ x)
+  hazard <- as.numeric((summary(modCox)$conf.int)[1])
+  LCI <- as.numeric((summary(modCox)$conf.int)[3])
+  UCI <- as.numeric((summary(modCox)$conf.int)[4])
+  return(cbind(hazard, LCI, UCI))
+}
+
+hazardTable <- data.frame(t(sapply(temp, f)))
+colnames(hazardTable) <- c("HR","L95 CB","U95 CB")
+pander(hazardTable)
+```
+
+```{r}
+event.time.pkids$gender <- relevel(event.time.pkids$gender, ref = "Female")
+CreateTableOne(vars = varsList,
+               strata = c("consec"),
+               data = event.time.pkids,
+               includeNA = TRUE)
+```
+
+Adjusted Hazard Ratios
+```{r}
+# temp %<>% select(-hbov.mom.14, -hbov.sibs.14, -mom.status)
+fullFit <- coxph(survObj ~ ., data = temp, robust = TRUE, ties = "breslow")
+summary(fullFit)
+names(fullFit$coefficients) <- c("Male",
+                                 "HIV (+) Mother",
+                                 "HBoV-1 (+) Mother",
+                                 "HBoV-1 (+) Pregnant Mother",
+                                 "Breast fed (28 days)",
+                                 "Breast Feeding Duration",
+                                 "Saliva Sharing (28 days)")
+
+ggforest(fullFit, plot.title = "Adjusted Coefficients")
+```
+
+Diagnostics
+```{r}
+cox.zph(fullFit)
+par(mfrow = c(3, 3))
+plot(cox.zph(fullFit))
+par(mfrow = c(1, 1))
+```
+
+No problem with Schoenfeld residuals here.
+
+## Duration of viral shedding
+
+Add maximum duration of infection (max.infx.dur) and primary infection duration (prim.infx.dur).
+```{r}
+event.time.pkids %<>%
+  left_join(max.infx.dur, by = "patientid") %>%
+  left_join(prim.infx.dur, by = "patientid")
+```
+
+Plot Durations
+```{r}
+dur.levels <- c("prim_infx_dur","max_duration")
+dur.labels <- c("Primary Shedding Duration", "Maximum Shedding Duration")
+
+temp <- event.time.pkids %>%
+  select(patientid, prim_infx_dur, max_duration) %>%
+  melt(id.vars = "patientid") %>%
+  mutate(variable = factor(variable, 
+                           levels = dur.levels, 
+                           labels = dur.labels))
+
+vlines <- plyr::ddply(temp, "variable", 
+                      summarise, 
+                      med = median(value, na.rm = TRUE))
+
+ggplot(merge(temp, vlines), aes(x = value)) %>%
+  add(geom_histogram(binwidth = 0.5)) %>%
+  add(scale_x_continuous(breaks = seq(0, 13, by = 1))) %>%
+  add(geom_vline(aes(xintercept = med),
+                 col = "red", 
+                 linetype = "dashed",
+                 size = 1)) %>%
+  add(facet_wrap(~variable)) %>%
+  add(theme_bw()) %>%
+  add(labs(x = "\n HBoV-1 Infection Duration",
+           y = "\n Frequency",
+           title = "HBoV-1 Infection Duration Distribution",
+           subtitle = "Primary Children"))
+
+event.time.pkids %>%
+  select(prim_infx_dur) %>%
+  ggplot() %>%
+  add(geom_histogram(aes(x = prim_infx_dur), binwidth = 1)) %>%
+  add(geom_vline(aes(xintercept = median(prim_infx_dur, na.rm = TRUE)),
+                 color = "red", linetype = "dashed", size = 1)) %>%
+  add(scale_x_continuous(limits = c(0, 60), breaks = seq(0, 60, by = 5))) %>%
+  add(theme_bw()) %>%
+  add(labs(x = "\n Infection Duration, Weeks",
+           y = "Frequency",
+           subtitle = "Prospective Cohort (n = 29) from Kampala, Uganda"))
+
+temp %>%
+  filter(!is.na(value)) %>%
+  group_by(variable) %>%
+  summarise_each(funs(min, max, median, mean), value) %>%
+  pander()
+```
+
+Unadjusted Hazards
+
+Let's take a look at the risk factors associated with duration of primary infection. How might an HBoV-1 positive mother affect the duration? How about Saliva-sharing behaviors?
+```{r}
+varsList <- c("age.prim.infx","gender","hiv.mom","hbov.mom.14",
+              "mom.status","breast.fed.28","breast.feed.dur","saliva.share.28")
+temp <- event.time.pkids[,c(varsList)]
+temp$gender <- relevel(temp$gender, ref = "Female")
+survObj <- Surv(event.time.pkids$prim_infx_dur, event.time.pkids$hbov.event)
+
+# same function f as above
+hazardTable <- data.frame(t(sapply(temp, f)))
+colnames(hazardTable) <- c("HR","L95 CB","U95 CB")
+pander(hazardTable)
+```
+
+Adjusted Hazard Ratios
+```{r}
+fullFit <- coxph(survObj ~ ., data = temp, robust = TRUE, ties = "breslow")
+summary(fullFit)
+names(fullFit$coefficients) <- c("Age at Primary Infection",
+                                 "Male",
+                                 "HIV (+) Mother",
+                                 "HBoV-1 (+) Mother (within 14 days)",
+                                 "HBoV-1 (+) Mother",
+                                 "Breast Fed (within 28 days)",
+                                 "Breast Feed Duration (1 day)",
+                                 "Saliva-Sharing (28 days)")
+ggforest(fullFit, title = "Adjusted Coefficients")
+```
+
+Diagnostics
+```{r}
+cox.zph(fullFit)
+par(mfrow = c(4, 2))
+plot(cox.zph(fullFit))
+par(mfrow = c(1, 1))
+```
+
+The next thing I would like to tackle is how the duration of infection is modified by viral load. For this we will employ a time-varying covariate for viral load over the duration of infection in the counting-process style (i.e., [start, stop)).
+
+```{r}
+temp <- crf.boca.demo.red4 %>%
+  filter(idcode == "P" & primary == 1) %>%
+  select(patientid, hbov_duration, ORL_BOCA, 
+         fever, ill.symptoms, saliva.share, breastfed) %>%
+  group_by(patientid) %>%
+  mutate(week = row_number() - 1)
+
+event.time.pkids.red <- event.time.pkids %>%
+  select(patientid, hbov.mom.14, hiv.mom, mom.status, gender, 
+         hbov.event, age.prim.infx, prim_infx_dur) %>%
+  rename(time = prim_infx_dur,
+         status = hbov.event) %>%
+  filter(!is.na(time))
+
+cont.cov.pkids <- tmerge(event.time.pkids.red, 
+                         event.time.pkids.red, 
+                         id = patientid,
+                         exit = event(time, status))
+
+cont.cov.pkids <- tmerge(cont.cov.pkids, temp, 
+                         id = patientid,
+                         ORL_BOCA = tdc(week, ORL_BOCA),
+                         fever = tdc(week, fever),
+                         ill.symptoms = tdc(week, ill.symptoms),
+                         saliva.share = tdc(week, saliva.share),
+                         breastfed = tdc(week, breastfed))
+```
+
+Unadjusted
+```{r}
+varsList <- c("hbov.mom.14","hiv.mom","gender","age.prim.infx",
+              "ORL_BOCA","saliva.share",
+              "breastfed", "mom.status")
+temp <- cont.cov.pkids[ ,c(varsList)]
+temp$gender <- relevel(temp$gender, ref = "Female")
+survObj <- with(cont.cov.pkids, {Surv(tstart, tstop, exit == 1)})
+
+# same function f as above
+hazardTable <- data.frame(t(sapply(temp, f)))
+colnames(hazardTable) <- c("HR","L95 CB","U95 CB")
+pander(hazardTable)
+```
+
+Adjusted Hazards
+```{r}
+fullFit <- coxph(survObj ~ ., data = temp, ties = "breslow", robust = TRUE)
+summary(fullFit)
+names(fullFit$coefficients) <- c("HBoV-1 (+) Mother",
+                                 "HIV (+) Mother", 
+                                 "Male", 
+                                 "Age at Primary Infection", 
+                                 "Log10 HBoV-1/mL Saliva",
+                                 "Saliva Sharing", 
+                                 "Breast Fed", 
+                                 "HBoV-1 (+) Pregnant Mother")
+ggforest(fullFit, title = "Adjusted Coefficients")
+```
+
+## Peak Viral load correlates with duration?
+
+```{r}
+corr.hbov.time <- crf.boca.demo.red4 %>%
+  group_by(patientid) %>%
+  summarise(maxHBoV = max(ORL_BOCA, na.rm = TRUE)) %>%
+  right_join(event.time.pkids, by = "patientid") %>%
+  select(time, maxHBoV)
+
+lm_eqn <- function(df) {
+  m <- lm(maxHBoV ~ time, data = df)
+  eq <- substitute(italic(r)^2~"="~r2,
+                   list(r2 = format(summary(m)$r.squared, digits = 3)))
+  as.character(as.expression(eq))
+}
+
+corr.hbov.time %>%
+  ggplot(aes(x = time)) %>%
+  add(geom_point(aes(y = maxHBoV))) %>%
+  add(stat_smooth(aes(y = maxHBoV), method = "lm", formula = y ~ x)) %>%
+  add(geom_text(x = 30, y = 1, label = lm_eqn(corr.hbov.time), parse = TRUE)) %>%
+  add(theme_bw())
+```
+
+Nope.
+
+## Association of HBoV-1 viral load and clearance time
+
+* Outcomes of Interest
+    + Time-to-Infection Clearance (Duration)
+    + Longitudinal salivary HBoV-1/mL levels
+    
+* Research Questions
+    + How strong is the association between HBoV-1 viral load and clearance time?
+    + How 'good' is HBoV-1 viral load in predicting viral clearance?
+    
+* Intuitive idea
+    + Use an appropriate model to describe the evolution of a particular time-varying covariate for each patient
+    + These evolutions are then used in a Cox model
+
+Formulation:
+
+$T_i^*$: True time-to-clearance (HBoV-1) for patient $i$
+
+$T_i$: Observed time-to-clearance for patient $i$
+
+$\delta_i$: HBoV-1 event indicator
+
+$y_i$: vector of longitudinal Oral HBoV-1 Saliva Samples ($log_{10}$/mL)
+    
+Standard Relative Risk Model: $\lambda_i(t) = \lambda_0(t)exp(\beta^TX + \gamma m_i(t))$
+
+Where $m_i(t)$ is the true and unobserved value of HBoV-1 viral load over time $t$, and $\gamma$ is its effect on HBoV-1 viral clearance.
+
+to estimate $m_i(t)$ we use a mixed effect model using the observed longitudinal response $y_i(t)$
+
+$$
+\begin{aligned}
+ y_i(t) &= m_i(t) + \epsilon_i(t) \\
+        &= x_i^T(t)\gamma + z_i^T(t)b_i + \epsilon_i(t), \quad \epsilon_i(t) \sim N(0, \sigma^2)
+\end{aligned}
+$$
+Where:
+
+fixed effects: $x_i(t)$ and $\gamma$
+random effects: $z_i(t)$ and $b_i ~ N(0, D)$ 
+
+Next we establish a joint distribution with the following form (Tsiatis & Davidian, Stat. Sinica, 2004)
+
+$$ p(y_i, T_i, \delta_i) = \int p(y_i|b_i) h(T_i|b_i)^{\delta_i}S(T_i|b_i)p(b_i)db_i $$
+Where $p()$ is the probability density function and $S()$ is the survival function.
+
+$p(y_i, T_i, \delta_i)$ can be estimated through MCMC methods or maximum likelihood methods.
+
+Below, if the parameter $\alpha$, the association parameter is significant than it is associated with viral clearance and the sign of the parameter will indicate which direction.
+
+```{r}
+library(JMbayes)
+
+col.set <- brewer.pal(3, "Set1")
+ids <- names(which(table(cont.cov.pkids$patientid) > 6))
+cont.cov.pkids %>%
+  filter(patientid %in% ids) %>%
+  ggplot(aes(x = tstop, y = ORL_BOCA)) %>%
+  add(geom_point()) %>%
+  add(stat_smooth(aes(group = 1, color = "Cubic Spline"), 
+                  method = "lm",
+                  formula = y ~ splines::ns(x, 3), 
+                  se = FALSE)) %>%
+  add(stat_smooth(aes(group = 1, color = "Linear Model"), 
+                  method = "gam", 
+                  se = FALSE)) %>%
+  add(facet_wrap(~patientid, ncol = 5)) %>%
+  add(theme_bw()) %>%
+  add(labs(x = "\n Duration of Infection, weeks",
+           y = expression(paste("HBoV-1 Log"[10], " Copies/mL")),
+           color = "Method")) %>%
+  add(theme(legend.position = "bottom")) %>%
+  add(scale_color_manual(values = c(col.set[2], col.set[1])))
+```
+
+Linear Mixed Effects Model 
+
+To allow for flexibility in the specification of the oral bocavirus samples we model them with cubic splines in both the fixed and random effects parts of the mixed model.
+```{r}
+oral_boca <- select(cont.cov.pkids, patientid, tstop, ORL_BOCA, hbov.mom.14)
+miss.pts <- data.frame(patientid = rep(c('02171-P', '02459-P', '02475-P'), each = 3),
+                       tstop = rep(1:3, 3),
+                       ORL_BOCA = rep(0, 9),
+                       hbov.mom.14 = rep('HBoV-1 (-)', 9))
+oral_boca <- bind_rows(oral_boca, miss.pts)
+oral_boca %<>% mutate(ORL_BOCA = exp(ORL_BOCA),
+                      patientid = factor(patientid),
+                      hbov.mom.14 = factor(hbov.mom.14))
+
+ctrl <- lmeControl(opt = 'optim')
+lmeFit <- lme(ORL_BOCA ~ tstop, 
+              random = ~ 1 | patientid, 
+              data = oral_boca,
+              control = ctrl)
+```
+
+Cox Model Fit
+```{r}
+temp <- event.time.pkids %>%
+  mutate(prim_infx_dur = ifelse(hbov.event == 0, 3, prim_infx_dur)) %>%
+  dplyr::select(hbov.event, prim_infx_dur, hbov.mom.14)
+
+coxFit <- coxph(Surv(prim_infx_dur, hbov.event) ~ hbov.mom.14,
+                data = temp,
+                x = TRUE)
+```
+
+Joint Fit
+```{r}
+# jointFit <- jointModelBayes(lmeFit, coxFit, timeVar = "tstop") # already ran
+# saveRDS(jointFit, "~/Documents/Martin Lab/HBov-1/Uganda/Plots/joint_fit.rds")
+jointFit <- readRDS("~/Documents/Martin Lab/HBov-1/Uganda/Plots/joint_fit.rds")
+summary(jointFit)
+
+# pdf("~/Documents/Martin Lab/HBov-1/Uganda/Plots/joint_fit.pdf")
+# plot(jointFit)
+# dev.off()
+```
+
+Subject Specific Predictive Plots
+```{r}
+ND <- oral_boca[oral_boca$patientid == '02483-P', ]
+survPreds <- vector("list", nrow(ND))
+for (i in 1:nrow(ND)) {
+  survPreds[[i]] <- survfitJM(jointFit, newdata = ND[1:i, ], idVar = "patientid")
+}
+
+par(mfrow = c(2, 2), oma = c(0, 2, 0, 2))
+for (i in c(1, 2, 3, 4)) {
+  plot(survPreds[[i]], 
+       estimator = "median", 
+       conf.int = TRUE,
+       include.y = FALSE)
+}
+```
+
+# Case-Cross Over Analysis
+
+```{r}
+first.last.infx.dt <- crf.boca.demo.red4 %>%
+  filter(primary == 1) %>%
+  select(patientid, coldate, primary) %>%
+  group_by(patientid) %>%
+  mutate(first = row_number() == 1,
+         last = row_number() == n(),
+         first.prim.dt = as.Date(ifelse(first, coldate, NA)),
+         last.prim.dt = as.Date(ifelse(last, coldate, NA)))
+
+first.infx.dt <- first.last.infx.dt %>%
+  select(patientid, first.prim.dt) %>%
+  filter(!is.na(first.prim.dt))
+
+last.infx.dt <- first.last.infx.dt %>%
+  select(patientid, last.prim.dt) %>%
+  filter(!is.na(last.prim.dt))
+
+illness.symptoms <- c("patientid","fever2","rash2","swgland",
+                      "irrit","poorap","vomit2","diarr2","runnose",
+                      "seizure","cough2","soreth2","mthsores2","primary",
+                      "visitdoc","coldate","first.prim.dt","last.prim.dt")
+
+symptom.dat <- crf.boca.demo.red4 %>%
+  full_join(first.infx.dt, by = "patientid") %>%
+  full_join(last.infx.dt, by = "patientid") %>%
+  filter(idcode == "P" & !is.na(coldate)) %>%
+  select(one_of(illness.symptoms)) %>%
+  mutate(time_before = as.numeric(difftime(first.prim.dt, coldate, units = "days")),
+         time_after = as.numeric(difftime(last.prim.dt, coldate, units = "days")))
+  
+symptoms.before <- symptom.dat %>% filter(time_before %in% 1:14)
+symptoms.during <- symptom.dat %>% filter(primary == 1)
+symptoms.after <- symptom.dat %>% filter(time_after %in% -seq(1:14))
+```
+
+Analyzing symptoms windows
+
+Before:
+```{r}
+symps <- c("fever2","visitdoc","rash2","swgland",
+           "irrit","poorap","vomit2","diarr2","runnose",
+           "seizure","cough2","soreth2","mthsores2")
+data.frame(symps_before = apply(symptoms.before[ ,c(symps)], 2, sum))
+data.frame(symps_during = apply(symptoms.during[ ,c(symps)], 2, sum))
+data.frame(symps_after = apply(symptoms.after[ ,c(symps)], 2, sum))
+```
+
+Visualization of Illness Symptoms Before, During, and After Primary Infection
+```{r}
+bad.vars <- c("patientid", "swgland", "seizure","primary",
+              "coldate", "first.prim.dt", "last.prim.dt", 
+              "time_before", "time_after","soreth2")
+
+symptoms.before %<>% 
+  select(-one_of(bad.vars)) %>% 
+  mutate(Time = "14 Days Prior")
+symptoms.during %<>% 
+  select(-one_of(bad.vars)) %>% 
+  mutate(Time = "During")
+symptoms.after %<>% 
+  select(-one_of(bad.vars)) %>% 
+  mutate(Time = "14 Days Post")
+
+symps <- colnames(symptoms.before)[-11] # 11 is "Time"
+symps.labs <- c("Fever","Rash","Irritable","Poor Appetite",
+                "Vomiting","Diarrhea","New Rhinnorhea",
+                "New Cough","Mouth Sores", "Healthcare Visit")
+symptoms.before %>%
+  bind_rows(symptoms.during) %>%
+  bind_rows(symptoms.after) %>%
+  melt(id = "Time") %>%
+  filter(value != 0) %>%
+  mutate(Time = factor(Time, levels = c("14 Days Prior","During","14 Days Post")),
+         variable = factor(variable, levels = symps, labels = symps.labs)) %>%
+  ggplot(aes(x = factor(variable), fill = factor(Time))) %>%
+  add(geom_bar(position = "dodge")) %>%
+  add(theme_bw()) %>%
+  add(scale_fill_grey()) %>%
+  add(theme(legend.title = element_blank())) %>%
+  add(labs(x = "\n Illness Symptoms",
+           y = "Frequency"))
+```
+
+To match case days (primary infection period) with control days ($-14 \le$ primary infectious period $\le 14$) we will need to combine days in the before and after periods.
+```{r}
+control.periods <- symptom.dat %>% 
+  filter(time_before %in% 1:14 | time_after %in% -seq(1:14)) %>%
+  dplyr::select(-time_before, -time_after, -first.prim.dt, -last.prim.dt) %>%
+  group_by(patientid) %>%
+  summarise(fever = sum(fever2),
+            rash = sum(rash2),
+            irritable = sum(irrit),
+            poor_appetite = sum(poorap),
+            vomit = sum(vomit2),
+            diarrhea = sum(diarr2),
+            rhinorrhea = sum(runnose),
+            cough = sum(cough2),
+            sore_throat = sum(soreth2),
+            mouth_sores = sum(mthsores2),
+            visitdoc = sum(visitdoc)) %>%
+  ungroup() %>%
+  mutate(case = 0)
+
+case.periods <- symptom.dat %>% 
+  filter(primary == 1) %>%
+  group_by(patientid) %>%
+  summarise(fever = sum(fever2),
+            rash = sum(rash2),
+            irritable = sum(irrit),
+            poor_appetite = sum(poorap),
+            vomit = sum(vomit2),
+            diarrhea = sum(diarr2),
+            rhinorrhea = sum(runnose),
+            cough = sum(cough2),
+            sore_throat = sum(soreth2),
+            mouth_sores = sum(mthsores2),
+            visitdoc = sum(visitdoc)) %>%
+  ungroup() %>%
+  mutate(case = 1)
+
+matched <- rbind(case.periods, control.periods)
+
+f <- function(x) {
+  modClogit <- clogit(matched$case ~ x + strata(matched$patientid))
+  summClogit <- summary(modClogit)
+  confClogit <- summClogit$conf.int
+  OR <- confClogit[1]
+  LCL <- confClogit[3]
+  UCL <- confClogit[4]
+  return(cbind(OR, LCL, UCL))
+}
+
+symps <- c("fever", "rash", "irritable", "poor_appetite", 
+           "vomit", "diarrhea", "rhinorrhea", "cough", "visitdoc")
+temp <- matched[, symps]
+matched.analysis <- data.frame(t(apply(temp, 2, f)))
+colnames(matched.analysis) <- c("OR", "L95 CB", "U95 CB")
+pander(matched.analysis)
+```
+
+# Panel Visualization
+
+## Time series plots
+### HboV-1 positive samples over study time
+
+Larry Corey has the following suggestion (in an e-mail dated 5/16/2017): The distribution of time of infection suggest antibodies may protect the infant when you present the data *a histogram of the incidence of infection by person months per month of life* may be of interest and might make a nice graph.
+
+```{r}
+elapsed_months <- function(end_date, start_date) {
+    ed <- as.POSIXlt(end_date)
+    sd <- as.POSIXlt(start_date)
+    12 * (ed$year - sd$year) + (ed$mon - sd$mon)
+}
+
+series <- demo.clean %>%
+  filter(idcode == "P") %>%
+  select(patientid, dob) %>%
+  full_join(event.time.pkids, by = "patientid") %>%
+  filter(hbov.event == 1) %>%
+  mutate(age_months = elapsed_months(first.consec.dt, dob)) %>%
+  select(age_months)
+
+p <- series %>%
+  count(age_months) %>%
+  mutate(cumsum = cumsum(n),
+         denom = 32 - lag(cumsum),
+         denom = ifelse(is.na(denom), 32, denom),
+         risk = (n / denom) * 1000) %>%
+  ggplot(aes(x = age_months, y = risk)) %>%
+  add(geom_histogram(stat = "identity", 
+                     fill = "darkred",
+                     color = "black",
+                     alpha = 0.5)) %>%
+  add(scale_x_continuous(breaks = 1:14)) %>%
+  add(theme_trueMinimal(13)) %>%
+  add(labs(x = "",
+           y = "HBoV-1 Incidence per 1,000 person-months \n",
+           title = "Human Bocavirus 1 Infection Incidence by Month of Life",
+           subtitle = "Prospective Cohort (n = 29) from Kampala, Uganda"))
+
+q <- series %>%
+  count(age_months) %>%
+  mutate(cumsum = cumsum(n),
+         denom = 32 - lag(cumsum),
+         denom = ifelse(is.na(denom), 32, denom),
+         risk = (n / denom) * 1000,
+         cumrisk = cumsum / denom) %>%
+  ggplot(aes(x = age_months, y = cumrisk)) %>%
+  add(geom_histogram(stat = "identity", 
+                     fill = "darkblue",
+                     color = "black",
+                     alpha = 0.5)) %>%
+  add(scale_x_continuous(breaks = 1:14)) %>%
+  add(theme_trueMinimal(13)) %>%
+  add(labs(x = "",
+           y = "Cumulative HBoV-1 Incidence \n"))
+
+r <- series %>%
+  ggplot(aes(age_months)) %>%
+  add(geom_histogram(binwidth = 0.5,
+                     color = "black",
+                     fill = "darkgreen",
+                     alpha = 0.5)) %>%
+  add(scale_x_continuous(breaks = scales::pretty_breaks(n = 14))) %>%
+  add(theme_trueMinimal(13)) %>%
+  add(labs(x = "\n Month of Life",
+           y = "HBoV-1 Incidence\n"))
+
+p; q; r
+
+# png("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/Plots/incidence_series.png",
+#     width = 900, height = 950)
+# plot_grid(p, q, r, align = "v", nrow = 3, labels = c("A","B","C"))
+# dev.off()
+```
+
+```{r}
+hbov.time.series.date <- crf.boca.demo.red4 %>%
+  select(coldate, ORL_BOCA, member) %>%
+  arrange(member, coldate) %>%
+  rename(date = coldate, hbov = ORL_BOCA) %>%
+  mutate(boca.pos = ifelse(hbov != 0.0, 1, 0),
+         week = floor_date(date, "week") + 8) %>%
+  plyr::ddply(plyr::.(member, week), summarise, 
+              sumBOV = sum(boca.pos, na.rm = TRUE), 
+              meanBOV = mean(boca.pos, na.rm = TRUE)*100) %>%
+  filter(!is.na(week))
+
+hbov.time.series.week <- crf.boca.demo.red4 %>%
+  filter(!is.na(ORL_BOCA)) %>%
+  select(stdy_wk, ORL_BOCA, member) %>%
+  arrange(member, stdy_wk) %>%
+  rename(hbov = ORL_BOCA) %>%
+  mutate(boca.pos = ifelse(hbov != 0.0, 1, 0)) %>%
+  plyr::ddply(plyr::.(member, stdy_wk), summarise, 
+              sumBOV = sum(boca.pos, na.rm = TRUE),
+              meanBOV = mean(boca.pos, na.rm = TRUE)*100)
+  
+by.week <- hbov.time.series.week %>%
+  melt(id = c("member","stdy_wk")) %>%
+  ggplot(aes(x = stdy_wk, y = value, group=variable)) %>%
+  add(geom_line(aes(linetype = variable))) %>%
+  add(facet_wrap(~member, scales = "free_x")) %>%
+  add(theme_minimal()) %>%
+  add(theme(legend.position = "none")) %>%
+  add(labs(x = "\nStudy Week",
+           y = "% or Frequency of (+) Samples",
+           title = "RT-PCR (+) HBoV-1 Samples from 32 Ugandan Families (n=113 individuals)",
+           subtitle = "By Study Week")) %>%
+  add(scale_linetype_discrete(breaks = c("sumBOV","meanBOV"),
+                              labels = c("Total (+) HBoV-1","HBoV-1 Testing Positive, %")))
+
+by.date <- hbov.time.series.date %>%
+  melt(id = c("member","week")) %>%
+  ggplot(aes(x = week, y = value, group = variable)) %>%
+  add(geom_line(aes(linetype = variable))) %>%
+  add(facet_wrap(~member, scales = "free_x")) %>%
+  add(theme_minimal()) %>%
+  add(theme(legend.position = "bottom", legend.title = element_blank())) %>%
+  add(labs(x = "\nCollection Date",
+           y = "% or Frequency of (+) Samples",
+           subtitle = "By Collection Date")) %>%
+  add(scale_linetype_discrete(breaks = c("sumBOV","meanBOV"),
+                              labels = c("Total (+) HBoV-1","HBoV-1 Testing Positive, %")))
+
+grid.arrange(by.week, by.date, nrow = 2)
+```
+
+```{r}
+crf.boca.demo.red4 %>%
+  filter(ORL_BOCA != 0.0) %>%
+  select(stdy_wk, ORL_BOCA, member) %>%
+  mutate(boca.pos = ifelse(ORL_BOCA != 0.0, 1, 0)) %>%
+  arrange(member, stdy_wk) %>%
+  plyr::ddply(plyr::.(member, stdy_wk), summarise,
+              medianBOV = median(ORL_BOCA, na.rm = TRUE),
+              sumBOV = sum(boca.pos, na.rm = TRUE)) -> temp
+
+breaks <- c("medianBOV","posPerc")
+labels <- c("Log10 Copies/mL, Median","Samples Testing Positive, %")
+
+crf.boca.demo.red4 %>%
+  group_by(member) %>%
+  distinct(stdy_wk, n.enroll) %>%
+  ungroup() %>%
+  arrange(member, stdy_wk) %>%
+  full_join(temp, by = c("member","stdy_wk")) %>%
+  filter(!is.na(medianBOV)) %>%
+  mutate(posPerc = (sumBOV/n.enroll)*100) %>%
+  select(-n.enroll, -sumBOV) %>%
+  reshape2::melt(id.vars = c("member","stdy_wk")) %>% 
+  ggplot(aes(x = stdy_wk, y = value, group = variable)) %>%
+  add(geom_line(aes(linetype = variable))) %>%
+  add(scale_y_continuous(breaks = seq(0, 100, by = 5))) %>%
+  add(facet_wrap(~member)) %>%
+  add(theme_minimal()) %>%
+  add(labs(x = "\n Study Week", y = "% or Median log10 HBoV-1")) %>%
+  add(theme(legend.position="bottom", legend.title = element_blank())) %>%
+  add(scale_linetype_discrete(breaks = breaks, labels = labels))
+```
+
+```{r}
+sec.axis <- sec_axis(~./10, name = expression(paste("Log"[10], " Copies/mL, Median")))
+
+crf.boca.demo.red4 %>%
+  group_by(member) %>%
+  distinct(stdy_wk, n.enroll) %>%
+  ungroup() %>%
+  arrange(member, stdy_wk) %>%
+  full_join(temp, by = c("member","stdy_wk")) %>%
+  filter(!is.na(medianBOV)) %>%
+  mutate(posPerc = (sumBOV/n.enroll)*100) %>%
+  select(-n.enroll, -sumBOV) %>%
+  ggplot(aes(x=stdy_wk)) %>%
+  add(geom_line(aes(y = posPerc, linetype = "Positive Samples, %"))) %>%
+  add(geom_line(aes(y = medianBOV*10, linetype = "Log10 Copies/mL, Median"))) %>%
+  add(scale_y_continuous(sec.axis = sec.axis)) %>%
+  add(facet_wrap(~member)) %>%
+  add(labs(y = "Sample Testing Positive, %",
+           x = "\n Study Week",
+           linetype = "")) %>%
+  add(theme_bw()) %>%
+  add(theme(legend.position = "bottom"))
+```
+
+```{r}
+sec.axis <- sec_axis(~.*10, name = "Samples Testing Positive, %")
+
+crf.boca.demo.red4 %>%
+  group_by(member) %>%
+  distinct(stdy_wk, n.enroll) %>%
+  ungroup() %>%
+  arrange(member, stdy_wk) %>%
+  full_join(temp, by = c("member","stdy_wk")) %>%
+  filter(!is.na(medianBOV)) %>%
+  mutate(posPerc = (sumBOV/n.enroll)*100) %>%
+  select(-n.enroll, -sumBOV) %>%
+  ggplot(aes(x = stdy_wk)) %>%
+  add(geom_bar(aes(y = medianBOV, fill = "Log10 Copies/mL"), 
+               stat = "identity", alpha = 0.8, width = 1)) %>%
+  add(geom_line(aes(y = posPerc/10, group = 1, color = "Positive Samples, %"))) %>%
+  add(scale_color_manual(" ", values = c("Log10 Copies/mL"="grey", "Positive Samples, %"="black"))) %>%
+  add(scale_fill_manual("", values = "grey50")) %>%
+  add(scale_y_continuous(sec.axis = sec.axis)) %>%
+  add(facet_wrap(~member)) %>%
+  add(theme_bw()) %>%
+  add(labs(x = "Study Follow-Up, Weeks",
+           y = expression(paste("Log"[10]," Copies/mL, Median")))) %>%
+  add(theme(legend.position = "bottom"))
+```
+
+### Fever and Other Illness symptoms over study-time for Primary Children
+
+#### Fever
+```{r}
+fever.time.series <- crf.boca.demo.red4 %>%
+  filter(member == "Primary Child") %>%
+  select(coldate, fever) %>%
+  arrange(coldate) %>%
+  rename(date = coldate) %>%
+  mutate(week = floor_date(date, "week") + 8) %>%
+  plyr::ddply("week", summarise, sumFever = sum(fever, na.rm = TRUE), 
+              meanFever = mean(fever, na.rm = TRUE)) %>%
+  filter(!is.na(week))
+
+fever.sum.ts <- ts(fever.time.series$sumFever, start = c(2008,5,19), freq = 52)
+fever.sum.xts <- xts(fever.time.series$sumFever, order.by = fever.time.series$week)
+fever.mean.ts <- ts(fever.time.series$meanFever, start = c(2008,5,19), freq = 52)
+fever.mean.xts <- xts(fever.time.series$meanFever, order.by = fever.time.series$week)
+
+par(mfrow = c(2, 1))
+plot(fever.sum.xts,
+     main = "Weekly Fever Incidence \n total",
+     ylab = "Fever Incidence",
+     auto.grid = FALSE)
+plot(fever.mean.xts,
+     main = "Weekly Fever Incidence \n adjusted for Enrollment",
+     auto.grid = FALSE)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+fevers.stl <- stl(fever.sum.ts, 
+                  s.window = "periodic", 
+                  robust = TRUE)
+autoplot(fevers.stl, main = "Fever Incidence Decomposition")
+```
+
+No seasonality in Fevers is evident
+
+##### fevers by HBoV-1 positivity in Primary Children
+
+```{r}
+# Those with HBoV-1 Samples
+fever.pos.ts <- crf.boca.demo.red4 %>%
+  filter(consec == "HBoV Pos") %>%
+  select(coldate, fever) %>%
+  arrange(coldate) %>%
+  rename(date = coldate) %>%
+  mutate(week = floor_date(date, "week")+8) %>%
+  plyr::ddply("week", summarise, sumFever = sum(fever, na.rm = TRUE), 
+              meanFever = mean(fever, na.rm = TRUE)) %>%
+  filter(!is.na(week)) %>%
+  mutate(hbovPos = 1,
+         hbovPos = factor(hbovPos, 
+                          levels = c(0, 1), 
+                          labels = c("HBoV-1 (-)", "HBoV-1 (+)")))
+
+# Those without HBoV-1 positive samples
+fever.neg.ts <- crf.boca.demo.red4 %>%
+  filter(consec == "HBoV Neg") %>%
+  select(coldate, fever) %>%
+  arrange(coldate) %>%
+  rename(date = coldate) %>%
+  mutate(week = floor_date(date, "week") + 8) %>%
+  plyr::ddply("week", summarise, sumFever = sum(fever, na.rm = TRUE), 
+              meanFever = mean(fever, na.rm = TRUE)) %>%
+  filter(!is.na(week)) %>%
+  mutate(hbovPos = 0,
+         hbovPos = factor(hbovPos,
+                          levels = c(0,1),
+                          labels = c("HBoV-1 (-)","HBoV-1 (+)")))
+
+fever.ts <- rbind(fever.pos.ts[c(1,2,4)], fever.neg.ts[c(1,2,4)])
+
+myColors <- brewer.pal(3, "Set1")
+p <- fever.ts %>%
+  ggplot(aes(x = week, y = sumFever, color = hbovPos)) %>%
+  add(stat_smooth(method = "loess", span = 0.2, se = FALSE)) %>%
+  add(scale_color_manual(values = c(myColors[1], myColors[2]))) %>%
+  add(labs(x = "",
+           y = "Fever Incidence",
+           color = "",
+           title = "Fever Incidence Over Study Time by HBoV-1 Infection Status",
+           subtitle = "Includes Mothers, Primary and Secondary Children")) %>%
+  add(theme_hc()) %>%
+  add(theme(legend.position = "none"))
+
+fever.pos.sum.xts <- xts(fever.pos.ts$sumFever, order.by = fever.pos.ts$week)
+fever.neg.sum.xts <- xts(fever.neg.ts$sumFever, order.by = fever.neg.ts$week)
+
+m <- lm(coredata(fever.pos.sum.xts) ~ index(fever.pos.sum.xts))
+detrended.pos <- data.frame(detrended = unname(m$residuals) + 6,
+                            date = index(fever.pos.sum.xts),
+                            hbovPos = "HBoV-1 (+)")
+m <- lm(coredata(fever.neg.sum.xts) ~ index(fever.neg.sum.xts))
+detrended.neg <- data.frame(detrended = unname(m$residuals) + 6,
+                            date = index(fever.neg.sum.xts),
+                            hbovPos = "HBoV-1 (-)")
+
+detrended.ts <- rbind(detrended.pos, detrended.neg)
+q <- detrended.ts %>%
+  ggplot(aes(x = date, y = detrended, color = hbovPos)) %>%
+  add(stat_smooth(method = "loess", span = 0.2, se = FALSE)) %>%
+  add(scale_color_manual(values = c(myColors[2], myColors[1]))) %>%
+  add(scale_y_continuous(breaks = c(0,2,4,6,8))) %>%
+  add(labs(x = "\n Date",
+           y = "Fever Incidence w/o Trend",
+           color = "",
+           subtitle = "Trend Removed",
+           caption = "Data plotted with LOESS smoothing")) %>%
+  add(theme_hc()) %>%
+  add(theme(legend.position = "bottom"))
+
+grid.arrange(p, q)
+```
+
+## Household Level
+
+## individual level plots
+
+```{r, eval=FALSE, echo=FALSE}
+source("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/Functions/nest_ifelse.R") # nest_ifelse.R function
+
+p <- crf.boca.demo.red4 %>%
+  filter(!is.na(ORL_BOCA)) %>%
+  mutate(member = factor(ie(
+    i(grepl("M", patientid),   'Mother'),
+    i(grepl("P", patientid),   'Primary Child'),
+    i(grepl("S1", patientid),  'Secondary Child 1'),
+    i(grepl("S2", patientid),  'Secondary Child 2'),
+    e('Secondary Child 3')
+  ))) %>%
+  select(patientid, FAMILY_ID, ORL_BOCA, coldate, member) %>%
+  ggplot(aes(x = coldate, y = ORL_BOCA, color = member)) %>%
+  add(geom_point(alpha = 0.7, size = 1)) %>%
+  add(scale_color_brewer(palette = "Set1")) %>%
+  add(theme_bw()) %>%
+  add(theme(legend.position = "bottom")) %>%
+  add(labs(x = "Collection Date",
+           y = "Log10 HBoV-1 Viral Load/mL Saliva",
+           title = "HBoV-1 Viral Load by Household and Family Member"))
+
+# pdf("~/Documents/Martin Lab/HBov-1/Uganda/Plots/family plots.pdf")
+# ggplus::facet_multiple(plot = p, 
+#                        facets = "FAMILY_ID", 
+#                        ncol = 2, nrow = 4, 
+#                        scales = "free_x")
+# dev.off()
+```
+
+```{r, eval=FALSE, echo=FALSE}
+p <- crf.boca.demo.red4 %>%
+  filter(!is.na(ORL_BOCA)) %>%
+  mutate(member = factor(ie(
+    i(grepl("M", patientid),   'Mother'),
+    i(grepl("P", patientid),   'Primary Child'),
+    i(grepl("S1", patientid),  'Secondary Child 1'),
+    i(grepl("S2", patientid),  'Secondary Child 2'),
+    e('Secondary Child 3')
+  ))) %>%
+  select(patientid, FAMILY_ID, ORL_BOCA, stdy_wk, member) %>%
+  ggplot(aes(x = stdy_wk, y = ORL_BOCA, color = member)) %>%
+  add(geom_point(alpha = 0.7, size = 1)) %>%
+  add(scale_color_brewer(palette = "Set1")) %>%
+  add(theme_bw()) %>%
+  add(theme(legend.position = "bottom")) %>%
+  add(labs(x = "Study Week",
+           y = "Log10 HBoV-1 Viral Load/mL Saliva",
+           title = "HBoV-1 Viral Load by Household and Family Member"))
+
+# pdf("~/Documents/Martin Lab/HBov-1/Uganda/Plots/family plots stdy_wk.pdf")
+# ggplus::facet_multiple(plot = p, 
+#                        facets = "FAMILY_ID", 
+#                        ncol = 2, 
+#                        nrow = 4, 
+#                        scales = "free_x")
+# dev.off()
+```
+
+# Misc. Functions
+
+```{r, echo=TRUE, eval=FALSE}
+# A wrapper around nested ifelse statements
+library(lazyeval)
+
+i <- function(if_stat, then){
+	if_stat <- lazyeval::expr_text(if_stat)
+	then    <- lazyeval::expr_text(then)
+	sprintf("ifelse(%s, %s, ", if_stat, then)
+}
+
+e <- function(else_ret){
+	else_ret <- lazyeval::expr_text(else_ret)
+	else_ret
+}
+
+ie <- function(...){
+	args <- list(...)
+	for (i in 1:(length(args)-1)){
+		if (substr(args[[i]], 1, 6) != "ifelse"){
+			stop("All but the last argument need to be i functions.",
+				call. = FALSE)
+		}
+	}
+	if (substr(args[[length(args)]], 1, 6) == "ifelse"){
+		stop("Last argument needs to be an e function.",
+			call. = FALSE)
+	}
+	args$final <- paste(rep(')', length(args) - 1), collapse = '')
+	eval_string <- do.call('paste', args)
+	eval(parse(text = eval_string))
+}
+
+# true minimal theme
+theme_trueMinimal <- function(base_size = 11, base_family = "") {
+    theme_bw(base_size = base_size, base_family = base_family) %+replace% 
+        theme(axis.ticks = element_blank(), 
+              legend.background = element_blank(), 
+              legend.key = element_blank(), 
+              panel.background = element_blank(), 
+              strip.background = element_blank(), 
+              panel.border = element_blank(),
+              panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank(),
+              plot.background = element_blank(), 
+              axis.line = element_line(), 
+              axis.line.y = element_blank(),
+              complete = TRUE)
+}
+```
