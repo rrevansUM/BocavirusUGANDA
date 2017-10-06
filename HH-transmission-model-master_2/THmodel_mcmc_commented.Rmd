@@ -1,0 +1,438 @@
+---
+title: "THmodel_mcmc_commented"
+author: "Sophia Ng, Josh Petrie, Richard Evans"
+date: "`r format(Sys.time(),'%B, %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(magrittr))
+```
+
+Created by Sophia Ng on Aug 31, 2015, Modified by Josh Petrie on Nov 2, 2015
+
+# Rationale
+
+This script estimates model parameters from the data formatted in THmodel_premcmc_commented.R using markov chain monte carlo
+
+## Components
+
+Hazards of infection from both the **community** and **household** contribute to the likelihood.
+
+### Community Component
+
+The hazard of infection at time t from the community for each cohort member, j, is modeled as:
+
+    R> lin.pred = para5 * AGECAT2 + para6 * AGECAT3 + para7 * HR + para8 * vax
+
+$$Z_i = \theta_5I(9\leq AGE_i \lt 18) + \theta_6I(Age_i \geq 18) + \theta_7I(HR_i=1) + \theta_8I(vax(t)_i=1)$$
+
+    R> C.HAZ.SUM.FN = com(t) * para4 * exp(lin.pred)
+
+$$\lambda_{j,C}(t_i|Z) = com(t_i) \theta_4 e^Z$$
+
+(In publications: $\lambda_{j,C}(t|Z) = P_c(t) \psi_C exp(Z)$)
+
+where $com(t)$ is a time varying proxy for the baseline hazard from community informed by state surveillance, $\theta_4 (\psi_c(t))$ is a scaling parameter for the baseline community hazard $\theta_5,...,\theta_8$ are parameters for the effects of various subject characteristics.
+ 
+### Household Component
+ 
+The daily hazard of infection for each household contact, j, from each infected individual, i, in the household is modeled as:
+
+    R> lin.pred = para5 * AGECAT2 + para6 * AGECAT3 + para7 * HR + para8 * vax
+
+$$Z_i = \theta_5I(9\leq AGE_i \lt 18) + \theta_6I(Age_i \geq 18) + \theta_7I(HR_i=1) + \theta_8I(vax(t)_i=1)$$
+
+    R> HH.HAZ.SUM.FN = SI.FN(t) * para3 * exp(lin.pred)
+
+$$\lambda_{HH}(t|Z) = f(\tau|\alpha, \gamma) \theta_3 e^Z$$
+where SI.FN ($f(\tau|\alpha, \gamma) \sim Weibull(\alpha, \gamma)$) is a weibull distribution that models the serial interval (time in days between symptom onset of prior and subsequent influenza cases) in those households where influenza has been introduced:
+
+$$f(\tau|\alpha, \gamma) = e^{-(t/\theta_1)^{\theta_2}} - e^{-((t+1)/\theta_1)^{\theta_2}}$$
+
+    R> exp(-(t/para1)^para2) - exp(-((t+1)/para1)^para2), 
+
+where para1 ($\theta_1$ or $\gamma$) and para2 ($\theta_2$ or $\alpha$) are shape parameters for the weibull distribution
+
+para3 ($\theta_3$) is a constant parameter representing the baseline household hazard of infection
+para5 - para8 ($\theta_5,...,\theta_8$) are parameters for the effects of various subject characteristics
+
+### Total Hazard and Likelihood
+
+The total hazard of infection is the **sum** of the hazards from the **household** and from the **community**.
+
+$$\lambda_j(t|Z) = \lambda_{j,C}(t|Z) + \sum_{i=1}^n\lambda_{HH,i \rightarrow j}(\tau|Z)$$
+
+MCMC is used to estimate $\Theta = \left\{\theta_1,...,\theta_8\right\}$
+
+The contribution to the likelihood for those **NOT** infected during follow up, and prior to the date of illness onset for those who were infected is:
+
+    R> exp(-1 * pre.haz)
+  $$e^{-\lambda_{pre}}$$
+
+*pre.haz* is the sum of the hazards of infection from the community (*pre.c.haz*) and from the household (*pre.hh.haz*) prior to infection ($\lambda_{pre} = \lambda_{j,C}(t_i|Z) + \lambda_{HH, pre}(t|Z)$).
+
+The additional contribution to the likelihood on the date of illness onset for those infected during follow up is:
+
+    R> 1 - exp(-1 * on.haz)
+  $$1-e^{-\lambda_{on}}$$
+
+*on.haz* is the sum of the hazards of infection from the community (*ondate.c.haz*) and from the household (*ondate.hh.haz*) on the date of illness onset for those infected ($\lambda_{on} = \lambda_{j,C}(t_i|Z) + \lambda_{HH, on}(t|Z)$)
+
+The full likelihood:
+
+The contribution of the likelihood function from each infected individual is the probability that they were infected on their day of illness onset, $t_{j0}$, multiplied by the probability that they escaped infection each day prior to their illness onset
+
+$$p(Y_j = 1, t_j=t_{j,0}) = (1 - e^{-\lambda_j(t_{j0})})(e^{-\sum_{d=1}^{t_{j0}-1}\lambda_j(d)})$$
+
+The contribution to the likelihood function for each individual not infected during the study period is the probability that they escaped infection each day of the influenza season.
+
+$$p(Y_j = 0, t_j=t_{end}+1) = e^{-\sum_{d=1}^{t_j}\lambda_j(d)}$$
+
+The overall likelihood:
+
+$$f(Z|\Theta) = L(\Theta|Z) = \sum_{j:y_j=1}log(1-e^{-\lambda_j(t_{j0})}) - \sum_j\sum_{d=1}^{t_j}\lambda_j(d)$$
+
+# Load Data
+
+Must have previously run the file *THmodel_pre_mcmc_commented.R* first on study data. See *THmodel_premcmc_commended.Rmd* or *THmodel_premcmc_commended.html* for details.
+
+```{r, warning = FALSE, message = FALSE}
+if(!suppressPackageStartupMessages(require(MESS)))
+  install.packages("MESS")
+
+# Read and Format the data
+setwd("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/HH-transmission-model-master_2/premcmc_data")
+ondate.c.exp <- readRDS("ondate.c.exp.rds")
+ondate.hh.exp <- readRDS("ondate.hh.exp.rds")
+preinf.c.exp <- readRDS("preinf.c.exp.rds")
+preinf.hh.exp <- readRDS("preinf.hh.exp.rds")
+```
+
+# MCMC model program
+
+theta: vector of parameter estimates from THmodel_mcmc_commented $\Theta = \left\{\theta_1,...,\theta_8\right\}$
+
+they are as follows: $\alpha$ (weibull shape), $\gamma$ (weibull scale), HH baseline hazard, community hazard scale, age 9-17 (coeff), age 18+ (coeff), high risk condition (coeff), vaccination (coeff)
+
+    theta <- c(q, k, hh base haz, com haz scale, Age 9-17, Age 18+, HighRisk, Vaccination)
+
+## Prior Function - 
+
+usually we set non-informative (flat) priors, e.g. Uniform(a,b) or Normal(mu,sigma) with relatively large sigma.
+
+```{r}
+logprior <- function(current) {
+  # write your own prior function here (CHANGE)
+  current$logprior <- dunif(current$theta1, 0, 10, log = TRUE)
+    + dunif(current$theta2, 0, 10, log = TRUE)
+    + dunif(current$theta3, 0, 1, log = TRUE)
+    + dunif(current$theta4, 0, 1, log = TRUE)
+    + dnorm(current$theta5, 0, 100, log = TRUE) 
+    + dnorm(current$theta6, 0, 100, log = TRUE)
+    + dnorm(current$theta7, 0, 100, log = TRUE)
+    + dnorm(current$theta8, 0, 100, log = TRUE)  
+  current
+}
+```
+
+## Serial interval (SI.FN)
+
+```{r}
+SI.FN <- function(current, EXPDAY) {
+  exp(-(EXPDAY / current$theta1) ^ current$theta2) - 
+    exp(-((EXPDAY + 1) / current$theta1) ^ current$theta2)
+}
+```
+
+## Daily Hazard of Infection for each HH contact, j, from each infected individual, i, in HH
+
+```{r}
+HH.HAZ.SUM.FN <- function(INPUT, current) {
+  input_df <- as.data.frame(INPUT)
+  d <- input_df$expday
+  lin.pred <- current$theta5 * input_df$AGECAT2 +
+              current$theta6 * input_df$AGECAT3 +
+              current$theta7 * input_df$HR +
+              current$theta8 * input_df$vax
+  response <- SI.FN(current, d) * current$theta3 * exp(lin.pred)
+  sum(response, na.rm = TRUE)
+}
+```
+
+## Daily hazard of infection from the community for each member, j
+
+```{r}
+C.HAZ.SUM.FN <- function(INPUT, current) {
+  input_df <- as.data.frame(INPUT)
+  com <- input_df$com
+  lin.pred <- current$theta5 * input_df$AGECAT2 +
+              current$theta6 * input_df$AGECAT3 +
+              current$theta7 * input_df$HR +
+              current$theta8 * input_df$vax
+  response <- com * current$theta4 * exp(lin.pred)
+  sum(response)
+}
+```
+
+## The likelihood function
+
+```{r}
+loglike <- function(current, PRE.HH, PRE.C, ON.HH, ON.C) {
+  # Apply HH.HAZ.SUM.FN to the data 
+  # to obtain the hazard of household infection prior to illness onset...
+  pre.hh.haz <- sapply(PRE.HH, HH.HAZ.SUM.FN, current = current)
+  
+  #...and on the day of illness onset for those infected
+  on.hh.haz <- sapply(ON.HH, HH.HAZ.SUM.FN, current = current)
+  
+  # Apply C.HAZ.SUM.FN to the data 
+  # to obtain the hazard of community infection prior to illness onset...
+  pre.c.haz <- sapply(PRE.C, C.HAZ.SUM.FN, current = current)
+  
+  # ...and on the day of illness onset for those infected
+  on.c.haz <- sapply(ON.C, C.HAZ.SUM.FN, current = current)
+    
+  # Sum the household and community hazards to get total daily hazards
+  #======================================================================#
+  # NOTE: The hazard vectors need to be the same length to be summed, so #
+  # PRE.C and PRE.HH should have 1 element per j                         #
+  # ON.C and ON.HH should have 1 element per i                           #
+  #======================================================================#
+  pre.haz <- pre.hh.haz + pre.c.haz
+  on.haz <- on.hh.haz + on.c.haz
+  
+  # The contribution to the likelihood for those NOT infected during follow up, and
+  # prior to the date of illness onset for those who were infected is:
+  like.not <- exp(-1 * pre.haz)
+  log.like.not <- log(like.not + 0.000001) # add small non-negative value
+  
+  # The additional contribution to the likelihood on the date of illness onset 
+  # for those infected during follow up is:
+  like.inf <- 1- exp(-1 * on.haz)
+  log.like.inf <- log(like.inf + 0.0000001)
+  
+  #Total log-likelihood
+  current$loglike <- sum(log.like.inf, log.like.not, na.rm = TRUE)
+  current
+}
+```
+
+## Function to constrain weibull shape parameters
+
+To assure model convergence, we use goodqk to constrain the Weibull shape parameters 
+such that the corresponding serial interval function would result in >= 80% of household 
+secondary infections occurring within 14 days of the onset of illness in the index case
+
+```{r}
+goodqk <- function(current) {
+  temp <- data.frame(t = 0:30, pmass = NA)
+  temp$pmass <- SI.FN(current, temp$t)
+  select <- temp[temp$pmass >= 0, ]
+  allA <- auc(select$t, select$pmass)
+  b14 <- auc(select$t[select$t < 14], select$pmass[select$t < 14])
+  (b14 / allA) >= 0.8 | temp$pmass[temp$t == 0] >= 0
+}
+
+# set parameter constrains (when applicable)
+bad_config <- function(current) {
+  ok_config = TRUE
+  # can change parameters to suit constraints, para1 should always be non-negative
+  if (current$theta1 < 0  |
+      current$theta2 < 0  |
+      current$theta3 < 0  |
+      current$theta4 <= 0 |
+      current$theta3 >= 1 |
+      goodqk(current) != TRUE) ok_config = FALSE
+  
+  if (is.na(current$loglike)) ok_config = FALSE
+  
+  bad = FALSE
+  if (!ok_config) bad = TRUE
+  bad
+}
+```
+
+## Metropolis-hasting Algorithm
+
+```{r}
+metropolis <- function(OLD, current, PRE.HH, PRE.C, ON.HH, ON.C) {
+  reject = bad_config(current)
+  if (!reject) {
+    current <- logprior(current)
+    current <- loglike(current, PRE.HH, PRE.C, ON.HH, ON.C)
+    lu <- log(runif(1))
+    condition <- is.na(current$logprior +
+                       sum(current$loglike) -
+                       OLD$logprior -
+                       sum(OLD$loglike))
+    lu_chk <- current$logprior +
+              sum(current$loglike) -
+              OLD$logprior -
+              sum(OLD$loglike)
+    if (condition) reject = TRUE
+    if (!condition) {
+      if (lu > lu_chk) reject = TRUE
+    }
+  }
+  if (reject) current = OLD
+  current
+}
+```
+
+## Monte Carlo Chain generator
+
+Set intitial values for $\Theta \cup log(p(\Theta)) \cup log(p(y|\Theta)) = \left\{\theta_1,...,\theta_8, log(p(\Theta)), log(p(y|Theta))\right\}$ and $\sigma$ for updating parameters. $sigma$ can and should be adjusted until satisfied with the acceptance rate.
+
+```{r}
+inits <- list(theta1 = 2,
+              theta2 = 2,
+              theta3 = 0.2,
+              theta4 = 0.005,
+              theta5 = 0.05,
+              theta6 = 0.05,
+              theta7 = 0.05,
+              theta8 = -0.5,
+              logprior = 0,
+              loglike = 0)
+
+sigma <- list(theta1 = 1,
+              theta2 = 5,
+              theta3 = 0.2,
+              theta4 = 0.001,
+              theta5 = 0.75,
+              theta6 = 0.5,
+              theta7 = 0.75,
+              theta8 = 0.5)
+```
+
+```{r}
+#main function for MCMC process
+mcmc <- function(PRE.HH, PRE.C, ON.HH, ON.C,
+                 MCMC_iterations,
+                 BURNIN_iterations,
+                 THINNING = 1,
+                 inits,
+                 sigma) {
+  # initial parameter values
+  current <- inits
+  # list to save posterior samples for each parameter
+  dump.names <- names(sigma)
+  dump <- vector("list", length(dump.names))
+  names(dump) <- dump.names
+  # calculate acceptance rate (45% - 55% is acceptable)
+  dump$accept <- matrix(NA, ncol = 8, nrow = MCMC_iterations)
+  sigma <- sigma
+  # logprior for initial values
+  current <- logprior(current)
+  # loglike for initial values
+  current <- loglike(current, PRE.HH, PRE.C, ON.HH, ON.C)
+  
+  #write posteriors at each iteration
+  pb <- txtProgressBar(min = 0, max = MCMC_iterations, style = 3)
+  for (iteration in (-BURNIN_iterations + 1):MCMC_iterations) {
+    old <- current
+    current$theta1 <- rnorm(1, current$theta1, sigma$theta1)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    old <- current 
+    current$theta2 <- rnorm(1, current$theta2, sigma$theta2)
+    current <- metropolis(old,current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    old <- current
+    current$theta3 <- rnorm(1,current$theta3, sigma$theta3)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    old <- current 
+    current$theta4 <- rnorm(1,current$theta4, sigma$theta4)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    old <- current
+    current$theta5 <- rnorm(1, current$theta5, sigma$theta5)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    old <- current 
+    current$theta6 <- rnorm(1, current$theta6, sigma$theta6)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    old <- current
+    current$theta7 <- rnorm(1, current$theta7, sigma$theta7)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)   
+    old <- current
+    current$theta8 <- rnorm(1, current$theta8, sigma$theta8)
+    current <- metropolis(old, current, PRE.HH, PRE.C, ON.HH, ON.C)    
+    
+    # save the posteriors after discarding burn-in values
+    if(iteration > 0) {
+      rr <- iteration
+      dump$theta1[rr] <- current$theta1   
+      dump$theta2[rr] <- current$theta2   
+      dump$theta3[rr] <- current$theta3   
+      dump$theta4[rr] <- current$theta4   
+      dump$theta5[rr] <- current$theta5   
+      dump$theta6[rr] <- current$theta6   
+      dump$theta7[rr] <- current$theta7   
+      dump$theta8[rr] <- current$theta8   
+
+      # save the result for accept/reject at each step to help find appropriate sigma
+      if(rr > 1) {    
+        dump$accept[rr, 1] <- 1 * (dump$theta1[rr] != dump$theta1[rr - 1])    
+        dump$accept[rr, 2] <- 1 * (dump$theta2[rr] != dump$theta2[rr - 1])    
+        dump$accept[rr, 3] <- 1 * (dump$theta3[rr] != dump$theta3[rr - 1])    
+        dump$accept[rr, 4] <- 1 * (dump$theta4[rr] != dump$theta4[rr - 1])    
+        dump$accept[rr, 5] <- 1 * (dump$theta5[rr] != dump$theta5[rr - 1])    
+        dump$accept[rr, 6] <- 1 * (dump$theta6[rr] != dump$theta6[rr - 1])    
+        dump$accept[rr, 7] <- 1 * (dump$theta7[rr] != dump$theta7[rr - 1])    
+        dump$accept[rr, 8] <- 1 * (dump$theta8[rr] != dump$theta8[rr - 1])  
+      }
+    }
+  setTxtProgressBar(pb, iteration)
+  }
+  dump
+}
+```
+
+Run Sampler and inspect chains
+
+```{r, warning = FALSE, message = FALSE}
+# start with small number of iterations (about 1000) to tune sigmas, then do full number
+# iter <- 15000
+# burnin <- iter / 3
+
+# system.time(
+#   model1 <- mcmc(preinf.hh.exp, preinf.c.exp, ondate.hh.exp, ondate.c.exp,
+#                  MCMC_iterations = iter,
+#                  BURNIN_iterations = burnin,
+#                  THINNING = 1,
+#                  inits = inits,
+#                  sigma = sigma)
+# )
+# ser         system    elapsed 
+# 31795.51     2.03     31810.10 
+#
+setwd("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/HH-transmission-model-master_2/mcmc_output")
+# saveRDS(model1, file = "model1.rds")
+model1 <- readRDS("model1.rds")
+```
+
+```{r, warning = FALSE, message = FALSE}
+chains <- do.call(cbind, model1[1:8]) %>% 
+  as.data.frame() %>%
+  reshape2::melt()
+
+chains %>%
+  ggplot(aes(value)) %>%
+  add(geom_density(fill = "grey")) %>%
+  add(facet_wrap(~variable, scales = "free")) %>%
+  add(theme_minimal())
+
+library(ggridges)
+chains %>%
+  ggplot(aes(x = value, y = variable)) %>%
+  add(geom_density_ridges(aes(fill = variable),
+    rel_min_height = 0.0001, 
+    scale = 3)) %>%
+  add(theme_ridges()) %>%
+  add(theme(legend.position = "none")) %>%
+  add(scale_fill_brewer()) %>%
+  add(labs(x = "", y = ""))
+```

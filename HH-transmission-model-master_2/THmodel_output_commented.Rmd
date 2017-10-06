@@ -1,0 +1,340 @@
+---
+title: "THmodel_output_commented"
+author: "Sophia Ng, Josh Petrie, Richard Evans"
+date: "`r format(Sys.time(),'%B, %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(magrittr))
+```
+
+Created by Josh Petrie on Jan 24, 2016, updated by Richard Evans on Oct 05, 2017
+
+# Rationale
+
+Using estimated parameter output from mcmc, this script creates output tables of:
+
+1. mcmc acceptance rate, parameter means (median) and 95% CI
+2. Serial interval mean (median) and 95% CI
+3. Cumulative risks of community and household infection with 95% CI for all combinations of patient characteristics (e.g. <9 years, high risk, unvaccinated)
+
+Each chain is an estimated parameter $\Theta = \left\{\theta_1,...,\theta_8\right\}$ from both the community hazard and HH hazard components of the model: $\Theta = \left\{\alpha, \gamma, \lambda_{HH}, \psi_C, \left\{\beta_i\right\}_{i=1}^n\right\}$
+
+theta <- c(q, k, hh base haz, com haz scale, Age 9-17, Age 18+, HighRisk, Vaccination)
+
+# Load Data
+
+```{r}
+setwd("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/HH-transmission-model-master_2/mcmc_output")
+# saveRDS(model1, file = "model1.rds")
+model1 <- readRDS("model1.rds")
+setwd("S:/MartinEpi/Projects/BoV-Uganda/Graphs and Reports/HH-transmission-model-master_2/")
+com <- read.csv("THmodel_exampleComData.csv") %>%
+  filter(!is.na(COM))
+```
+
+# Acceptance Rate
+
+optimal acceptance rate: ~45-55% in single dimension
+
+```{r}
+accept <- data.frame(
+  theta = names(model1[1:8]),
+  accept = round(colMeans(model1$accept, na.rm = TRUE), 2)
+  )
+
+a <- accept
+row.names(a) <- c("alpha", "gamma", "HH base haz", "Com haz scale", 
+                  "Age 9-17", "Age 18+", "HighRisk", "Vaccination")
+a
+```
+
+# Posterior means, medians, CIs
+
+```{r}
+ci.fn <- function(x) quantile(x, c(0.025, 0.975))
+
+mu <- round(sapply(model1[1:8], mean), 6)
+median <- round(sapply(model1[1:8], median), 6) # very similar
+
+ci <- round(sapply(model1[1:8], ci.fn), 6) %>%
+  t() %>%
+  data.frame() %>%
+  rename(LB = X2.5., UB = X97.5.)
+
+param.output <- data.frame(accept, mu, ci) %>%
+  mutate(theta = factor(theta, labels = row.names(a)))
+row.names(param.output) <- c()
+
+param.output
+```
+
+# Calculate Serial Intervals
+
+Calculate serial interval based on Weibull distribution, must provide $\alpha, \gamma$ (shape and scale) parameters from dataset
+
+```{r}
+SI.FN <- function(params, HHt, shape, scale) {
+  SI.FN <- exp(-(HHt / params[[shape]]) ^ params[[scale]]) -
+    exp(-((HHt + 1) / params[[shape]]) ^ params[[scale]])
+  SI.FN
+}
+
+SI.fn <- function(params, HHt, shape, scale) {
+  SI.instance <- SI.FN(params, HHt, shape, scale)
+  SI <- sum(HHt * SI.instance) / sum(SI.instance)
+  SI
+}
+
+SI.apply <- function(params, HHt, shape, scale) {
+  SIvec <- vector(length = length(params[[shape]]))
+  temp <- data.frame(
+    theta1 = params[[shape]],
+    theta2 = params[[scale]]
+  )
+  for (i in 1:length(temp[, 1])) 
+    SIvec[i] <- SI.fn(temp[i, ], HHt, shape, scale)
+  SIvec
+}
+```
+
+Mean Serial Interval
+
+```{r}
+muSI <- SI.apply(model1,
+                 seq(0, 14, 1),
+                 shape = "theta1", 
+                 scale = "theta2") %>%
+  mean() %>%
+  round(6)
+
+ciSI <- SI.apply(model1, 
+                 seq(0, 14, 1), 
+                 shape = "theta1", 
+                 scale = "theta2") %>%
+  quantile(c(0.025, 0.975)) %>%
+  round(6)
+
+# save output
+SI.output <- data.frame(SI = muSI, ciSILwr = ciSI[1], ciSIupr = ciSI[2])
+row.names(SI.output) <- c()
+SI.output
+```
+
+# Calculate total HH risk of infection
+
+```{r}
+# HHRISK calculates the total household risk of infection
+#HHRISK calculates the total household risk of infection from a given set of parameters
+HHRISK <- function(params, HHt, AGE9to17, AGEgte18, HighRisk, Vax) {
+  #### why is this here?
+  SI.FN <- exp(-(HHt / params$theta1) ^ params$theta2) - 
+    exp(-((HHt + 1) / params$theta1) ^ params$theta2)
+  
+  lin.pred <- params$theta5 * AGE9to17 + 
+    params$theta6 * AGEgte18 + 
+    params$theta7 * HighRisk + 
+    params$theta8 * Vax
+  HH.HAZ <- SI.FN * params$theta3 * exp(lin.pred)
+  eHH.HAZ <- exp(-HH.HAZ)
+  
+  HHl <- loess(1 - eHH.HAZ ~ HHt, span = .35)
+  HHf <- function(x) predict(HHl, newdata = x)
+  HHi <- integrate(HHf, 0, 14)
+  
+  HHi$value
+}
+
+#HHRISK.apply applies HHRISK to parameters generated from each mcmc iteration
+HHRISK.apply <- function(params, HHt, AGE9to17, AGEgte18, HighRisk, Vax) {
+  HouseRisk <- vector(length = length(params[[1]]))
+  temp <- data.frame(do.call(cbind, params[1:8]))
+  for(i in 1:nrow(temp)) {
+    HouseRisk[i] <- HHRISK(temp[i,], HHt, AGE9to17, AGEgte18, HighRisk, Vax)
+  } 
+  HouseRisk
+}
+```
+
+calculate mean household risk of infection for each combination of subject characteristics
+
+```{r}
+muHH <- c(mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 0, 0)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 1, 0)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 0, 1)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 1, 1)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 0, 0)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 1, 0)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 0, 1)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 1, 1)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 0, 0)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 1, 0)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 0, 1)),
+          mean(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 1, 1)))
+round(muHH, 6)
+```
+ 
+calculate 95% CI for household risk of infection for each combination of subject characteristics
+
+```{r}
+f <- function(func.output) quantile(func.output, c(0.025, 0.975))
+ciHH <- c(f(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 0, 0)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 1, 0)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 0, 1)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 0, 1, 1)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 0, 0)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 1, 0)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 0, 1)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 1, 0, 1, 1)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 0, 0)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 1, 0)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 0, 1)),
+          f(HHRISK.apply(model1, seq(0, 14, 1), 0, 1, 1, 1)))
+round(ciHH, 6)
+```
+
+Calculate total community risk of infection 
+
+```{r}
+#CRISK calculates the total community risk of infection
+CRISK <- function(params, com, Ct, AGE9to17, AGEgte18, HighRisk, Vax) {
+  lin.pred <- params$theta5 * AGE9to17 + 
+              params$theta6 * AGEgte18 + 
+              params$theta7 * HighRisk + 
+              params$theta8 * Vax
+  C.HAZ <- com$COM * params$theta4 * exp(lin.pred)
+  eC.HAZ <- exp(-C.HAZ)
+  
+  Cl <- loess(1 - eC.HAZ ~ Ct, span = .25)
+  Cf <- function(x) predict(Cl, newdata = x)
+  Ci <- integrate(Cf, 0, 104)
+  Ci$value
+}
+
+#CRISK.apply applies CRISK to parameters generated from each mcmc iteration
+CRISK.apply <- function(params, com, Ct, AGE9to17, AGEgte18, HighRisk, Vax) {
+  ComRisk <- vector(length = length(params[[1]]))
+  temp <- data.frame(do.call(cbind, params[1:8]))
+  for(i in 1:nrow(temp)){
+    ComRisk[i] <- CRISK(temp[i, ], com, Ct, AGE9to17, AGEgte18, HighRisk, Vax)
+  }
+  ComRisk
+}
+```
+
+calculate mean community risk of infection for each combination of subject characteristics
+
+```{r}
+muC <- c(mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 0, 0)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 1, 0)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 0, 1)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 1, 1)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 0, 0)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 1, 0)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 0, 1)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 1, 1)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 0, 0)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 1, 0)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 0, 1)),
+         mean(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 1, 1)))
+round(muC, 6)
+```
+
+calculate 95% CI for community risk of infection for each combination of subject characteristics
+
+```{r}
+f <- function(func.output) quantile(func.output, c(0.025, 0.975))
+ciC <- c(f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 0, 0)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 1, 0)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 0, 1)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 0, 1, 1)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 0, 0)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 1, 0)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 0, 1)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 1, 0, 1, 1)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 0, 0)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 1, 0)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 0, 1)),
+         f(CRISK.apply(model1, com, seq(0, 104, 1), 0, 1, 1, 1)))
+round(ciC, 6)
+```
+
+```{r}
+labels <- c("<9,   HighRisk -, Vax -", 
+            "<9,   HighRisk +, Vax -", 
+            "<9,   HighRisk -, Vax +", 
+            "<9,   HighRisk +, Vax +", 
+            "9-17, HighRisk -, Vax -", 
+            "9-17, HighRisk +, Vax -", 
+            "9-17, HighRisk -, Vax +",
+            "9-17, HighRisk +, Vax +", 
+            "18+,  HighRisk -, Vax -", 
+            "18+,  HighRisk +, Vax -", 
+            "18+,  HighRisk -, Vax +", 
+            "18+,  HighRisk +, Vax +")
+
+#put mean and 95% community and household risks in a data frame
+risk.output <- data.frame(
+  labels = labels, 
+  HHRisk = muHH, 
+  ciHHlwr = ciHH[c(1,3,5,7,9,11,13,15,17,19,21,23)], 
+  ciHHupr = ciHH[c(2,4,6,8,10,12,14,16,18,20,22,24)],
+  CRisk = muC,
+  ciClwr = ciC[c(1,3,5,7,9,11,13,15,17,19,21,23)],
+  ciCupr = ciC[c(2,4,6,8,10,12,14,16,18,20,22,24)]
+  )
+
+risk.output
+```
+
+plot posterior distribution chains
+
+```{r, fig.height = 16, fig.width = 16}
+chains <- do.call(cbind, model1[1:8]) %>%
+  data.frame()
+
+par(mfrow = c(2, 4))
+# chain trace plots
+for (i in 1:ncol(chains)) 
+  plot(chains[, i], type = "l",
+       ylab = paste("theta", i, sep = ""),
+       xlab = 'MCMC iteration')
+
+# density plots
+for (i in 1:ncol(chains))
+  plot(density(chains[, i]),
+       main = paste("theta", i, sep = ""))
+
+# histograms
+for (i in 1:ncol(chains))
+  hist(chains[, i], 
+       main = paste("theta", i, sep = ""),
+       xlab = '')
+
+# ACF plots
+for (i in 1:ncol(chains)) acf(chains[, i])
+
+# Partial ACF plots
+for (i in 1:ncol(chains)) pacf(chains[, i])
+
+# coefficient/hazard estimate plot with credible intervals
+param.output %>%
+  ggplot(aes(x = theta, y = mu)) %>%
+  add(coord_flip()) %>%
+  add(geom_point()) %>%
+  add(geom_linerange(aes(ymin = LB, ymax = UB))) %>%
+  add(theme_minimal(16)) %>%
+  add(labs(
+    y = expression(mu ~ '(95% CI)'),
+    x = ""
+  ))
+
+GGally::ggpairs(chains)
+```
+
